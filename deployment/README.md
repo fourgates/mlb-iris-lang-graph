@@ -9,3 +9,9 @@ However, for a more hands-on approach, you can always apply the Terraform config
 For detailed information on the deployment process, infrastructure, and CI/CD pipelines, please refer to the official documentation:
 
 **[Agent Starter Pack Deployment Guide](https://googlecloudplatform.github.io/agent-starter-pack/guide/deployment.html)**
+
+gcloud services enable \
+  serviceusage.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  cloudbuild.googleapis.com \
+  secretmanager.googleapis.com \
