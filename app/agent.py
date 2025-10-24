@@ -14,9 +14,9 @@
 
 # mypy: disable-error-code="union-attr"
 from langchain_google_vertexai import ChatVertexAI
-from langgraph.prebuilt import create_react_agent
-
-from app.utils.vertex_rag import VertexRAGClient
+from langchain_core.messages import AIMessage
+from langgraph.graph import StateGraph, START, END
+from typing import TypedDict
 
 LOCATION = "global"
 LLM = "gemini-2.5-flash"
@@ -24,27 +24,20 @@ LLM = "gemini-2.5-flash"
 llm = ChatVertexAI(model=LLM, location=LOCATION, temperature=0)
 
 
-
-_rag_client = None
-
-
-def _get_rag_client() -> VertexRAGClient:
-    global _rag_client
-    if _rag_client is None:
-        _rag_client = VertexRAGClient.from_env()
-    return _rag_client
+class State(TypedDict):
+    messages: list
 
 
-def search_corpus(query: str) -> str:
-    """Searches Vertex RAG corpus and returns concise, cited snippets."""
-    return _get_rag_client().search(query)
+def chat(state: State) -> dict:
+    last = state["messages"][-1]
+    content = last.content if isinstance(last.content, str) else str(last.content)
+    out = llm.invoke(content)
+    return {"messages": [AIMessage(content=out.content)]}
 
 
-agent = create_react_agent(
-    model=llm,
-    tools=[search_corpus],
-    prompt=(
-        "You are a helpful assistant. Use search_corpus for questions needing external knowledge. "
-        "When you use it, include brief citations like (1) (2) referring to sources."
-    ),
-)
+_graph = StateGraph(State)
+_graph.add_node("chat", chat)
+_graph.add_edge(START, "chat")
+_graph.add_edge("chat", END)
+
+agent = _graph.compile(name="Minimal Chat Graph")
