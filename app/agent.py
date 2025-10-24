@@ -16,19 +16,35 @@
 from langchain_google_vertexai import ChatVertexAI
 from langgraph.prebuilt import create_react_agent
 
+from app.utils.vertex_rag import VertexRAGClient
+
 LOCATION = "global"
 LLM = "gemini-2.5-flash"
 
 llm = ChatVertexAI(model=LLM, location=LOCATION, temperature=0)
 
 
-def get_weather(query: str) -> str:
-    """Simulates a web search. Use it get information on weather"""
-    if "sf" in query.lower() or "san francisco" in query.lower():
-        return "It's 60 degrees and foggy."
-    return "It's 90 degrees and sunny."
+
+_rag_client = None
+
+
+def _get_rag_client() -> VertexRAGClient:
+    global _rag_client
+    if _rag_client is None:
+        _rag_client = VertexRAGClient.from_env()
+    return _rag_client
+
+
+def search_corpus(query: str) -> str:
+    """Searches Vertex RAG corpus and returns concise, cited snippets."""
+    return _get_rag_client().search(query)
 
 
 agent = create_react_agent(
-    model=llm, tools=[get_weather], prompt="You are a helpful assistant"
+    model=llm,
+    tools=[search_corpus],
+    prompt=(
+        "You are a helpful assistant. Use search_corpus for questions needing external knowledge. "
+        "When you use it, include brief citations like (1) (2) referring to sources."
+    ),
 )

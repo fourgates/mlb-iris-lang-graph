@@ -94,3 +94,19 @@ The repository includes a Terraform configuration for the setup of a production 
 ) template for visualizing events being logged in BigQuery. See the "Setup Instructions" tab to getting started.
 
 The application uses OpenTelemetry for comprehensive observability with all events being sent to Google Cloud Trace and Logging for monitoring and to BigQuery for long term storage.
+
+## Notes
+
+### Initial Implementation
+Out of the box the starter kit uses the lang graph create_react_agent wrapper. this creates a pre built lang graph agent. 
+
+### what example would the benefit of using create_react_agent if both of the agent implemetnations (in their current form) look so similiar?
+- Stay ADK-native if you want ADK’s built-in tool ecosystem (MCPToolset, VertexAiRagRetrieval, AgentTool composition).
+- Use create_react_agent if you want turnkey ReAct control loop, LangGraph tracing/checkpointing, and an easy path to a fully explicit StateGraph later.
+
+### is there a difference between the tools defined in these two agent implementions? the google ADK Agent vs the lang graph prebuilt create_react_agent.
+- ReAct loop done-for-you: Thought → Action(tool) → Observation with step limits, stop criteria, retries, and a maintained scratchpad.
+- Evolvability: it’s a LangGraph Runnable today; you can swap to an explicit StateGraph later without changing your Agent Engine wiring or frontend.
+- Observability: first-class LangGraph/LangSmith tracing, structured messages, easy streaming, and built-in tool-call traces.
+- State/ops features: checkpointers (persist/restore runs), time-travel/replay, human-in-the-loop interrupts—turn on with minimal code.
+- Interop: uses LangChain tool interface; consistent prompting/tool routing across the LangGraph ecosystem.
