@@ -16,41 +16,130 @@
 import logging
 import re
 import json
+import os
 from langchain_google_vertexai import ChatVertexAI
 from langchain_core.messages import AIMessage
 from langgraph.graph import StateGraph, START, END
-from typing import TypedDict
-from app.utils.vertex_rag import VertexRAGClient
-from app.utils.mlb_tools import search_player, get_player_stats
+from typing import TypedDict, Any
 
-LOCATION = "global"
+from vertexai import rag
+from vertexai.preview.generative_models import GenerativeModel, grounding, Tool
+
+
+from app.utils.mlb_tools import search_player, get_player_stats
+from app.utils.log_utils import ensure_root_logger, log_start, log_end
+from app.utils.prompts import build_rag_answer_prompt_with_examples
+import time
+from google.api_core.exceptions import ResourceExhausted
+
+ensure_root_logger()
+
+# --- Configuration ---
+LOCATION = "us-east4"  # Grounding is not available in "global"
 LLM = "gemini-2.5-flash"
 
-llm = ChatVertexAI(model=LLM, location=LOCATION, temperature=0)
+# This LLM is for non-RAG tasks (like extraction and player chat)
+llm_langchain = ChatVertexAI(model_name=LLM, location=LOCATION, temperature=0.1)
 
+# --- KEY CHANGE: Instantiate the native SDK model for the RAG task ---
+# This gives us direct access to the `tools` parameter for grounding.
+llm_native_grounding = GenerativeModel(LLM)
+
+# --- KEY CHANGE: Define the Grounding Tool ---
+# This points the model to your RAG corpus. No need for a custom client!
+# It's better to fetch this from env vars for flexibility.
+RAG_CORPUS_NAME = os.getenv(
+    "VERTEX_RAG_CORPUS_NAME",
+    "projects/mlb-iris-production/locations/us-east4/ragCorpora/4611686018427387904"
+)
+grounding_tool = Tool.from_retrieval(
+    rag.Retrieval(
+        source=rag.VertexRagStore(
+            rag_resources=[
+                rag.RagResource(
+                    rag_corpus=RAG_CORPUS_NAME,
+                )
+            ]
+        ),
+    )
+)
 
 class State(TypedDict):
     messages: list
-    snippets: list[str]
+    # 'snippets' is no longer needed as we get a synthesized answer directly
     player_id: int | None
     stats: dict | None
     extracted_name: str | None
     extracted_team: str | None
+    do_rag: bool
+    do_player: bool
 
 
-_rag = VertexRAGClient.from_env()
+# --- DELETED: The old `retrieve_rag` node is no longer needed. ---
+# --- It's replaced by `generate_rag_answer`.
+# Under the hood, Google's infrastructure does everything for you:
+#
+# It takes your query.
+# It uses the query to perform a vector search on your RAG corpus.
+# It retrieves the most relevant document chunks.
+# It then internally feeds those chunks to the Gemini model along with your original query.
+# The Gemini model synthesizes an answer.
+# Critically, as it writes the answer, it keeps track of which sentence came from which document chunk. This creates the grounding_metadata that is returned with the response.
+def generate_rag_answer(state: State) -> dict:
+    log_start("generate_rag_answer")
+    last_message = state["messages"][-1]
+    query = last_message.content if isinstance(last_message.content, str) else str(last_message.content)
+    logging.info("[generate_rag_answer] query=%r", query)
 
+    # --- START of new retry logic ---
+    max_retries = 3
+    base_delay = 5  # seconds
 
-def retrieve_rag(state: State) -> dict:
-    last = state["messages"][-1]
-    query = last.content if isinstance(last.content, str) else str(last.content)
-    text = _rag.search(query)
-    # Keep only the cited lines for compact prompts; fall back to whole text
-    lines = [ln for ln in text.splitlines() if ln.startswith("(")] or [text]
-    return {"snippets": lines}
+    for attempt in range(max_retries):
+        try:
+            # Make a single, grounded API call
+            response = llm_native_grounding.generate_content(
+                query,
+                tools=[grounding_tool],
+            )
 
+            if not response.candidates[0].grounding_metadata:
+                log_end("generate_rag_answer", note="No grounding metadata returned.")
+                raw_text = response.text or "I could not find any information on that topic."
+                return {"messages": [AIMessage(content=raw_text)]}
+
+            # Use the helper function from `vertexai.rag`
+            rag_response = rag.add_inline_citations_and_references(
+                original_text_str=response.candidates[0].content.parts[0].text,
+                grounding_supports=list(response.candidates[0].grounding_metadata.grounding_supports),
+                grounding_chunks=list(response.candidates[0].grounding_metadata.grounding_chunks),
+            )
+
+            # Combine the answer and sources into a single, clean message
+            final_content = rag_response.cited_text
+            if rag_response.final_bibliography:
+                final_content += "\n\n**Sources:**\n" + rag_response.final_bibliography
+
+            log_end("generate_rag_answer", response_chars=len(final_content), success=True)
+            return {"messages": [AIMessage(content=final_content)]} # Success! Exit the loop and function.
+
+        except ResourceExhausted as e:
+            logging.warning(f"Attempt {attempt + 1}/{max_retries} failed with ResourceExhausted error: {e}")
+            if attempt + 1 == max_retries:
+                logging.error("Max retries reached. Failing the request.")
+                # You could return a user-friendly error message here
+                error_message = "The service is currently busy. Please try again in a few moments."
+                return {"messages": [AIMessage(content=error_message)]}
+            
+            # Exponential backoff: wait 5s, 10s, etc. before the next try
+            time.sleep(base_delay * (2 ** attempt)) 
+    
+    # This part should ideally not be reached, but as a fallback:
+    return {"messages": [AIMessage(content="An unexpected error occurred after multiple retries.")]}
+    # --- END of new retry logic ---
 
 def extract_player_node(state: State) -> dict:
+    log_start("extract_player")
     last = state["messages"][-1]
     q = last.content if isinstance(last.content, str) else str(last.content)
     system = {
@@ -62,14 +151,22 @@ def extract_player_node(state: State) -> dict:
         ),
     }
     human = {"role": "user", "content": f"Question: {q}"}
-    out = llm.invoke([system, human])
+    out = llm_langchain.invoke([system, human]) # Using the langchain wrapper here is fine
     try:
         data = json.loads(out.content)
     except Exception:
         data = {"name": None, "team": None}
     logging.info("[extract_player] q=%r -> %r", q, data)
-    return {"extracted_name": data.get("name"), "extracted_team": data.get("team")}
+    out = {"extracted_name": data.get("name"), "extracted_team": data.get("team")}
+    log_end("extract_player", **out)
+    return out
+
 def player_search_node(state: State) -> dict:
+    # ... (this node remains the same)
+    log_start("player_search", do_player=state.get("do_player", False))
+    if not state.get("do_player", False):
+        log_end("player_search", skipped=True)
+        return {}
     last = state["messages"][-1]
     q = last.content if isinstance(last.content, str) else str(last.content)
 
@@ -103,12 +200,20 @@ def player_search_node(state: State) -> dict:
         chosen = players[0]
 
     logging.info("[player_search] chosen=%r id=%s", chosen.get("full_name"), chosen.get("id"))
-    return {"player_id": int(chosen["id"])}
+    out = {"player_id": int(chosen["id"])}
+    log_end("player_search", **out)
+    return out
 
 
 def player_stats_node(state: State) -> dict:
+    # ... (this node remains the same)
+    log_start("player_stats", do_player=state.get("do_player", False))
+    if not state.get("do_player", False):
+        log_end("player_stats", skipped=True)
+        return {"stats": None}
     pid = state.get("player_id")
     if not pid:
+        log_end("player_stats", no_player_id=True)
         return {"stats": None}
     stats = get_player_stats(pid)
     try:
@@ -117,46 +222,111 @@ def player_stats_node(state: State) -> dict:
                      pid, hitting.get("avg"), hitting.get("ops"), hitting.get("home_runs"))
     except Exception:
         pass
-    return {"stats": stats}
+    out = {"stats": stats}
+    log_end("player_stats", has_stats=bool(stats))
+    return out
 
 
-def chat(state: State) -> dict:
+def chat_player(state: State) -> dict:
+    # RENAMED from chat to chat_player to be specific
+    log_start("chat_player")
     last = state["messages"][-1]
     query = last.content if isinstance(last.content, str) else str(last.content)
-    snippets = state.get("snippets", [])
-    if snippets:
+    
+    # This node now only handles player-related chat
+    st = state.get("stats") or {}
+    hitting = st.get("stats", {}).get("hitting_season", {}) if isinstance(st, dict) else {}
+    if hitting:
         prompt = (
-            "Use the cited snippets to answer the question. Cite tags like (1) when used.\n\n"
-            + "\n".join(snippets)
-            + f"\n\nQuestion: {query}\nAnswer:"
+            f"You are an expert MLB analyst. Here is the player's season hitting data:\n"
+            f"AVG: {hitting.get('avg', '.000')}\n"
+            f"HR: {hitting.get('home_runs', 0)}\n"
+            f"OPS: {hitting.get('ops', '.000')}\n"
+            f"RBI: {hitting.get('rbi', 0)}\n\n"
+            f"Based on this data, answer the user's question.\n"
+            f"Question: {query}\nAnswer:"
         )
     else:
-        # If we have stats, surface basics inline
-        st = state.get("stats") or {}
-        hitting = st.get("stats", {}).get("hitting_season", {}) if isinstance(st, dict) else {}
-        if hitting:
-            prompt = (
-                f"Player hitting (season): AVG {hitting.get('avg', '.000')}, "
-                f"HR {hitting.get('home_runs', 0)}, OPS {hitting.get('ops', '.000')}.\n\n"
-                f"Question: {query}\nAnswer:"
-            )
-        else:
-            prompt = query
-    out = llm.invoke(prompt)
-    return {"messages": [AIMessage(content=out.content)]}
+        prompt = query
+    logging.info("[chat_player] prompt_len=%d preview=%r", len(prompt), prompt)
+    out = llm_langchain.invoke(prompt)
+    res = {"messages": [AIMessage(content=out.content)]}
+    log_end("chat_player", response_chars=len(out.content) if hasattr(out, "content") else None)
+    return res
 
+
+def classify_node(state: State) -> dict:
+    # ... (this node remains the same, but its output is now used for routing)
+    log_start("classify")
+    last = state["messages"][-1]
+    q = last.content if isinstance(last.content, str) else str(last.content)
+    ql = q.lower()
+    do_player = False
+    do_rag = False
+
+    # If we already extracted a name, likely a player intent
+    if state.get("extracted_name"):
+        do_player = True
+
+    # Player keywords
+    player_keys = ["stats", "batting", "average", "avg", "ops", "home run", "rbi"]
+    if any(k in ql for k in player_keys):
+        do_player = True
+
+    # RAG/doc keywords
+    rag_keys = ["doc", "documentation", "reference", "how to", "explain", "rag"]
+    if any(k in ql for k in rag_keys):
+        do_rag = True
+
+    # --- KEY CHANGE: Simple routing logic. RAG takes precedence. ---
+    if do_rag:
+        do_player = False
+    # If no keywords are hit, default to RAG for general questions
+    elif not do_player and not do_rag:
+        do_rag = True
+
+    logging.info("[classify] do_player=%s do_rag=%s for q=%r", do_player, do_rag, q)
+    out = {"do_player": do_player, "do_rag": do_rag}
+    log_end("classify", **out)
+    return out
+
+# --- KEY CHANGE: Add a conditional routing function ---
+def route_after_classification(state: State) -> str:
+    if state.get("do_rag", False):
+        return "rag_path"
+    elif state.get("do_player", False):
+        return "player_path"
+    return END # Should not happen with current logic, but a safe fallback
 
 _graph = StateGraph(State)
-#_graph.add_node("retrieve_rag", retrieve_rag)
 _graph.add_node("extract_player", extract_player_node)
+_graph.add_node("classify", classify_node)
+_graph.add_node("generate_rag_answer", generate_rag_answer) # New RAG node
 _graph.add_node("player_search", player_search_node)
 _graph.add_node("player_stats", player_stats_node)
-_graph.add_node("chat", chat)
-_graph.add_edge(START, "extract_player")
-_graph.add_edge("extract_player", "player_search")
-#_graph.add_edge("retrieve_rag", "player_search")
-_graph.add_edge("player_search", "player_stats")
-_graph.add_edge("player_stats", "chat")
-_graph.add_edge("chat", END)
+_graph.add_node("chat_player", chat_player) # Renamed chat node
 
-agent = _graph.compile(name="Minimal Chat Graph")
+# --- KEY CHANGE: Re-wire the graph with conditional logic ---
+_graph.set_entry_point("extract_player")
+_graph.add_edge("extract_player", "classify")
+
+# Add the conditional edge for routing
+_graph.add_conditional_edges(
+    "classify",
+    route_after_classification,
+    {
+        "rag_path": "generate_rag_answer",
+        "player_path": "player_search",
+    }
+)
+
+# Define the player tool-use path
+_graph.add_edge("player_search", "player_stats")
+_graph.add_edge("player_stats", "chat_player")
+_graph.add_edge("chat_player", END)
+
+# Define the RAG path
+_graph.add_edge("generate_rag_answer", END)
+
+
+agent = _graph.compile(name="Grounding Chat Graph")

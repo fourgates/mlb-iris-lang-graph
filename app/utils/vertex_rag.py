@@ -13,7 +13,7 @@ DEFAULT_LOCATION = "us-east4"
 DEFAULT_RAG_CORPUS_NAME = (
     "projects/mlb-iris-production/locations/us-east4/ragCorpora/4611686018427387904"
 )
-DEFAULT_TOP_K = 4
+DEFAULT_TOP_K = 15
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -28,7 +28,7 @@ class VertexRAGClient:
     project_id: str
     location: str
     rag_corpus_name: str
-    top_k: int = 4
+    top_k: int = 15
 
     @classmethod
     def from_env(cls) -> "VertexRAGClient":
@@ -55,12 +55,25 @@ class VertexRAGClient:
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                return vertex_rag.retrieval_query(
+                result = vertex_rag.retrieval_query(
                     text=query_text,
                     rag_corpora=[self.rag_corpus_name],
                     similarity_top_k=self.top_k,
-                    vector_distance_threshold=0.8,
+                    vector_distance_threshold=0.6,
                 )
+                # Log raw result shape and a few previews
+                try:
+                    contexts = getattr(getattr(result, "contexts", None), "contexts", []) or []
+                    from_len = len(contexts)
+                    print(f"[RAG:_retrieve] query={query_text!r} corpora={self.rag_corpus_name} top_k={self.top_k} contexts={from_len}")
+                    for i, c in enumerate(contexts[:3], 1):
+                        src = getattr(c, "source_uri", None)
+                        dist = getattr(c, "distance", None)
+                        txt = getattr(c, "text", "")
+                        print(f"[RAG:_retrieve] #{i} source={src!r} distance={dist} preview={txt[:500]!r}")
+                except Exception:
+                    pass
+                return result
             except ServiceUnavailable as e:
                 last_exc = e
                 time.sleep(1.0 * (2**attempt))
@@ -119,11 +132,9 @@ class VertexRAGClient:
         if not tagged_snippets:
             return "No relevant information found in the RAG corpus."
 
-        lines: List[str] = []
-        max_chars = 400
-        for tag, text in tagged_snippets:
-            snippet = text if len(text) <= max_chars else f"{text[:max_chars]}…"
-            lines.append(f"({tag}) {snippet}")
+        lines: List[str] = [
+            f"({tag}) {text}" for tag, text in tagged_snippets
+        ]
 
         if sources:
             lines.append("")
