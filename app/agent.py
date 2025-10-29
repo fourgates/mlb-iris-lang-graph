@@ -256,36 +256,52 @@ def chat_player(state: State) -> dict:
 
 
 def classify_node(state: State) -> dict:
-    # ... (this node remains the same, but its output is now used for routing)
+    """
+    Uses an LLM call to classify the user's intent into 'PLAYER_STATS' or 'DOCUMENT_QA'.
+    """
     log_start("classify")
     last = state["messages"][-1]
-    q = last.content if isinstance(last.content, str) else str(last.content)
-    ql = q.lower()
-    do_player = False
-    do_rag = False
+    query = last.content if isinstance(last.content, str) else str(last.content)
+    extracted_name = state.get("extracted_name")
 
-    # If we already extracted a name, likely a player intent
-    if state.get("extracted_name"):
-        do_player = True
+    # System prompt to guide the LLM classifier
+    system_prompt = f"""You are an expert classification agent. Your task is to determine the user's primary intent based on their question.
+    You must choose one of the following two categories:
+    1.  `PLAYER_STATS`: The user is asking for statistics, performance, or biographical information about a specific baseball player.
+    2.  `DOCUMENT_QA`: The user is asking a question that should be answered by consulting a knowledge base of documents (e.g., policies, rules, "how-to" guides, explanations).
 
-    # Player keywords
-    player_keys = ["stats", "batting", "average", "avg", "ops", "home run", "rbi"]
-    if any(k in ql for k in player_keys):
-        do_player = True
+    You must respond ONLY with a minified JSON object in the format: {{"category": "YOUR_CHOICE"}}.
 
-    # RAG/doc keywords
-    rag_keys = ["doc", "documentation", "reference", "how to", "explain", "rag"]
-    if any(k in ql for k in rag_keys):
-        do_rag = True
+    ---
+    Here are some examples:
+    - User Question: "How many home runs did Shohei Ohtani hit last year?" -> {{"category": "PLAYER_STATS"}}
+    - User Question: "What is the official policy on team travel?" -> {{"category": "DOCUMENT_QA"}}
+    - User Question: "Tell me about Aaron Judge" -> {{"category": "PLAYER_STATS"}}
+    - User Question: "explain how the RAG system works" -> {{"category": "DOCUMENT_QA"}}
+    - User Question: "Hello there" -> {{"category": "DOCUMENT_QA"}}
+    ---
 
-    # --- KEY CHANGE: Simple routing logic. RAG takes precedence. ---
-    if do_rag:
-        do_player = False
-    # If no keywords are hit, default to RAG for general questions
-    elif not do_player and not do_rag:
-        do_rag = True
+    Additional context to help you decide:
+    - A potential player name has already been extracted from the query: '{extracted_name if extracted_name else "None"}'. This is a strong hint towards `PLAYER_STATS`.
+    """
 
-    logging.info("[classify] do_player=%s do_rag=%s for q=%r", do_player, do_rag, q)
+    # Make the LLM call
+    try:
+        response = llm_langchain.invoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"User Question: {query}"}
+        ])
+        data = json.loads(response.content)
+        category = data.get("category", "DOCUMENT_QA") # Default to RAG if key is missing
+    except Exception as e:
+        logging.warning(f"[classify] LLM classification failed or returned invalid JSON: {e}. Defaulting to DOCUMENT_QA.")
+        category = "DOCUMENT_QA"
+
+    # Map the category back to the state booleans
+    do_player = (category == "PLAYER_STATS")
+    do_rag = (category == "DOCUMENT_QA")
+
+    logging.info("[classify] LLM decided category=%s for q=%r", category, query)
     out = {"do_player": do_player, "do_rag": do_rag}
     log_end("classify", **out)
     return out
