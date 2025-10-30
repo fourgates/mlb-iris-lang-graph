@@ -6,15 +6,10 @@ authors = [
     {name = "Your Name", email = "your@email.com"},
 ]
 dependencies = [
-    "langchain-google-vertexai~=2.0.7",
-    "langchain~=0.3.14",
-    "langgraph~=0.6.2",
     "langchain-google-vertexai~=2.0.22",
-    "langchain~=0.3.14",
-    "langchain-community~=0.3.17",
-    "langchain-openai~=0.3.5",
+    "langgraph>=1,<2",
+    "langchain-core>=0.3.67,<0.4",
     "opentelemetry-exporter-gcp-trace>=1.9.0,<2.0.0",
-    "langchain-core~=0.3.9",
     "traceloop-sdk~=0.38.7",
     "google-cloud-logging>=3.12.0,<4.0.0",
     "google-cloud-aiplatform[evaluation,agent-engines]>=1.118.0,<2.0.0",

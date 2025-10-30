@@ -6,12 +6,13 @@ all the node functions from nodes.py.
 """
 
 from typing import TypedDict
+from langchain_core.messages import AnyMessage
 
 from langgraph.graph import END, StateGraph
 
 
 class State(TypedDict):
-    messages: list
+    messages: list[AnyMessage]
     # 'snippets' is no longer needed as we get a synthesized answer directly
     player_id: int | None
     stats: dict | None
