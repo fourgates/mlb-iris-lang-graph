@@ -11,7 +11,6 @@ import json
 import logging
 import re
 import time
-from typing import TYPE_CHECKING
 
 from google.api_core.exceptions import ResourceExhausted
 from langchain_core.messages import AIMessage
@@ -21,9 +20,7 @@ from app.utils.log_utils import log_end, log_start
 from app.utils.mlb_tools import get_player_stats, search_player
 
 from .services import grounding_tool, llm_langchain, llm_native_grounding
-
-if TYPE_CHECKING:
-    from .graph import State
+from .graph import State
 
 
 # --- DELETED: The old `retrieve_rag` node is no longer needed. ---
@@ -146,7 +143,7 @@ def route_query_node(state: State) -> dict:
     **You must respond ONLY with a single, minified JSON object and nothing else. Do not include any text, explanations, or markdown formatting before or after the JSON object.**
 
     The JSON object must have this exact format:
-    {"route": "PLAYER_STATS_PATH" | "DOCUMENT_QA", "entities": {"name": "..." | null, "team": "..." | null}}
+    {"route": "PLAYER_STATS" | "DOCUMENT_QA", "entities": {"name": "..." | null, "team": "..." | null}}
 
     Route Options:
     - "PLAYER_STATS": The user is asking for statistics, performance, or biographical information about a specific baseball player.
@@ -154,7 +151,7 @@ def route_query_node(state: State) -> dict:
 
     Examples:
     - User Query: "Tell me about Aaron Judge of the Yankees"
-    -> {"route": "PLAYER_STATS_PATH", "entities": {"name": "Aaron Judge", "team": "Yankees"}}
+    -> {"route": "PLAYER_STATS", "entities": {"name": "Aaron Judge", "team": "Yankees"}}
     - User Query: "What is the policy on team travel?"
     -> {"route": "DOCUMENT_QA", "entities": {"name": null, "team": null}}
     - User Query: "tell me what the Injured List is"  # <-- NEW EXAMPLE
@@ -286,13 +283,16 @@ def player_stats_node(state: State) -> dict:
     return out
 
 
-def chat_player(state: State) -> dict:
-    # RENAMED from chat to chat_player to be specific
-    log_start("chat_player")
+def answer_player_stats_query(state: State) -> dict:
+    """
+    Generates an answer to the user's query using the player's statistics as context.
+    Constructs a prompt with the player's hitting stats and asks the LLM to answer the query.
+    """
+    log_start("answer_player_stats_query")
     last = state["messages"][-1]
     query = last.content if isinstance(last.content, str) else str(last.content)
 
-    # This node now only handles player-related chat
+    # This node generates responses using player stats as context
     st = state.get("stats") or {}
     hitting = (
         st.get("stats", {}).get("hitting_season", {}) if isinstance(st, dict) else {}
@@ -309,11 +309,13 @@ def chat_player(state: State) -> dict:
         )
     else:
         prompt = query
-    logging.info("[chat_player] prompt_len=%d preview=%r", len(prompt), prompt)
+    logging.info(
+        "[answer_player_stats_query] prompt_len=%d preview=%r", len(prompt), prompt
+    )
     out = llm_langchain.invoke(prompt)
     res = {"messages": [AIMessage(content=out.content)]}
     log_end(
-        "chat_player",
+        "answer_player_stats_query",
         response_chars=len(out.content) if hasattr(out, "content") else None,
     )
     return res

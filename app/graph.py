@@ -9,16 +9,6 @@ from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from .nodes import (
-    chat_player,
-    decide_route,
-    generate_rag_answer,
-    hello_node,
-    player_search_node,
-    player_stats_node,
-    route_query_node,
-)
-
 
 class State(TypedDict):
     messages: list
@@ -30,6 +20,18 @@ class State(TypedDict):
     route: str  # Either "PLAYER_STATS", "DOCUMENT_QA", or "HELLO"
 
 
+# Import nodes after State is defined (needed for type hints and to avoid circular import issues)
+from .nodes import (
+    answer_player_stats_query,
+    decide_route,
+    generate_rag_answer,
+    hello_node,
+    player_search_node,
+    player_stats_node,
+    route_query_node,
+)
+
+
 # Build the graph
 _graph = StateGraph(State)
 _graph.add_node("router", route_query_node)
@@ -37,7 +39,7 @@ _graph.add_node("hello", hello_node)
 _graph.add_node("generate_rag_answer", generate_rag_answer)
 _graph.add_node("player_search", player_search_node)
 _graph.add_node("player_stats", player_stats_node)
-_graph.add_node("chat_player", chat_player)
+_graph.add_node("answer_player_stats_query", answer_player_stats_query)
 
 # Set entry point to router
 _graph.set_entry_point("router")
@@ -55,8 +57,8 @@ _graph.add_conditional_edges(
 
 # Define the player tool-use path
 _graph.add_edge("player_search", "player_stats")
-_graph.add_edge("player_stats", "chat_player")
-_graph.add_edge("chat_player", END)
+_graph.add_edge("player_stats", "answer_player_stats_query")
+_graph.add_edge("answer_player_stats_query", END)
 
 # Define the RAG path
 _graph.add_edge("generate_rag_answer", END)
