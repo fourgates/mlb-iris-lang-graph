@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "../MLB_IRIS_NEXT"
+		},
+		{
+			"path": "../dspy-tutorials"
+		},
+		{
+			"path": "../MLB-IRIS"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {}
+}

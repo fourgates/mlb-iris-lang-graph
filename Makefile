@@ -18,7 +18,7 @@ playground:
 	@echo "|                                                                             |"
 	@echo "| 💡 Try asking: What's the weather in San Francisco?                         |"
 	@echo "==============================================================================="
-	PYTHONPATH=. uv run python -m streamlit run frontend/streamlit_app.py --browser.serverAddress=localhost --server.enableCORS=false --server.enableXsrfProtection=false
+	PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python -m streamlit run frontend/streamlit_app.py --browser.serverAddress=localhost --server.enableCORS=false --server.enableXsrfProtection=false --logger.level=info
 
 # ==============================================================================
 # Backend Deployment Targets
@@ -28,7 +28,7 @@ playground:
 backend:
 	# Export dependencies to requirements file using uv export.
 	uv export --no-hashes --no-header --no-dev --no-emit-project --no-annotate > .requirements.txt 2>/dev/null || \
-	uv export --no-hashes --no-header --no-dev --no-emit-project > .requirements.txt && uv run app/agent_engine_app.py
+	uv export --no-hashes --no-header --no-dev --no-emit-project > .requirements.txt && PYTHONUNBUFFERED=1 uv run app/agent_engine_app.py
 
 
 # ==============================================================================
