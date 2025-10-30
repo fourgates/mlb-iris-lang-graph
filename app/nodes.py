@@ -23,6 +23,35 @@ from .services import grounding_tool, llm_langchain, llm_native_grounding
 from .graph import State
 
 
+def extract_message_content(message: dict | object) -> str:
+    """
+    Extract content from a message, handling both dict and LangChain message objects.
+
+    Args:
+        message: Either a dict with 'content' key or a LangChain message object with .content attribute
+
+    Returns:
+        The message content as a string
+
+    Raises:
+        ValueError: If message is a dict but missing 'content' key
+        TypeError: If message is neither a dict nor has a 'content' attribute
+    """
+    if isinstance(message, dict):
+        content = message.get("content")
+        if content is None:
+            raise ValueError(f"Message dict missing 'content': {message}")
+        return str(content) if not isinstance(content, str) else content
+    elif hasattr(message, "content"):
+        return (
+            message.content
+            if isinstance(message.content, str)
+            else str(message.content)
+        )
+    else:
+        raise TypeError(f"Unexpected message type: {type(message)}")
+
+
 # --- DELETED: The old `retrieve_rag` node is no longer needed. ---
 # --- It's replaced by `generate_rag_answer`.
 # Under the hood, Google's infrastructure does everything for you:
@@ -36,11 +65,7 @@ from .graph import State
 def generate_rag_answer(state: State) -> dict:
     log_start("generate_rag_answer")
     last_message = state["messages"][-1]
-    query = (
-        last_message.content
-        if isinstance(last_message.content, str)
-        else str(last_message.content)
-    )
+    query = extract_message_content(last_message)
     logging.info("[generate_rag_answer] query=%r", query)
 
     # --- START of new retry logic ---
@@ -54,8 +79,53 @@ def generate_rag_answer(state: State) -> dict:
                 query,
                 tools=[grounding_tool],
             )
-            if not response.candidates[0].grounding_metadata:
+
+            # Verify response has candidates before accessing
+            if not response.candidates or len(response.candidates) == 0:
+                log_end("generate_rag_answer", note="No candidates in response.")
+                raw_text = (
+                    response.text or "I could not find any information on that topic."
+                )
+                return {"messages": [AIMessage(content=raw_text)]}
+
+            candidate = response.candidates[0]
+
+            # Check if grounding_metadata exists
+            if (
+                not hasattr(candidate, "grounding_metadata")
+                or not candidate.grounding_metadata
+            ):
                 log_end("generate_rag_answer", note="No grounding metadata returned.")
+                raw_text = (
+                    response.text or "I could not find any information on that topic."
+                )
+                return {"messages": [AIMessage(content=raw_text)]}
+
+            # Check if grounding_supports is empty
+            grounding_supports = list(candidate.grounding_metadata.grounding_supports)
+            grounding_chunks = list(candidate.grounding_metadata.grounding_chunks)
+
+            if not grounding_supports:
+                log_end("generate_rag_answer", note="No grounding supports returned.")
+                raw_text = (
+                    response.text or "I could not find any information on that topic."
+                )
+                return {"messages": [AIMessage(content=raw_text)]}
+
+            # Verify candidate has content with parts before accessing
+            if not hasattr(candidate, "content") or not candidate.content:
+                log_end("generate_rag_answer", note="No content in candidate.")
+                raw_text = (
+                    response.text or "I could not find any information on that topic."
+                )
+                return {"messages": [AIMessage(content=raw_text)]}
+
+            if (
+                not hasattr(candidate.content, "parts")
+                or not candidate.content.parts
+                or len(candidate.content.parts) == 0
+            ):
+                log_end("generate_rag_answer", note="No content parts in candidate.")
                 raw_text = (
                     response.text or "I could not find any information on that topic."
                 )
@@ -63,13 +133,9 @@ def generate_rag_answer(state: State) -> dict:
 
             # Use the helper function from `vertexai.rag`
             rag_response = rag.add_inline_citations_and_references(
-                original_text_str=response.candidates[0].content.parts[0].text,
-                grounding_supports=list(
-                    response.candidates[0].grounding_metadata.grounding_supports
-                ),
-                grounding_chunks=list(
-                    response.candidates[0].grounding_metadata.grounding_chunks
-                ),
+                original_text_str=candidate.content.parts[0].text,
+                grounding_supports=grounding_supports,
+                grounding_chunks=grounding_chunks,
             )
 
             # Combine the answer and sources into a single, clean message
@@ -136,7 +202,7 @@ def route_query_node(state: State) -> dict:
     """
     log_start("route_query")
     last = state["messages"][-1]
-    query = last.content if isinstance(last.content, str) else str(last.content)
+    query = extract_message_content(last)
 
     system_prompt = """You are an expert routing agent for an MLB assistant. Your task is to analyze the user's query and return a JSON object that specifies the routing decision and any extracted entities.
 
@@ -214,7 +280,7 @@ def route_query_node(state: State) -> dict:
 def player_search_node(state: State) -> dict:
     log_start("player_search")
     last = state["messages"][-1]
-    q = last.content if isinstance(last.content, str) else str(last.content)
+    q = extract_message_content(last)
 
     # Prefer LLM-extracted name if present; fallback to heuristic
     name = state.get("extracted_name") or None
@@ -290,7 +356,7 @@ def answer_player_stats_query(state: State) -> dict:
     """
     log_start("answer_player_stats_query")
     last = state["messages"][-1]
-    query = last.content if isinstance(last.content, str) else str(last.content)
+    query = extract_message_content(last)
 
     # This node generates responses using player stats as context
     st = state.get("stats") or {}
