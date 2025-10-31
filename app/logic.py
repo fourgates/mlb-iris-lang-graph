@@ -9,17 +9,17 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
-from langchain_core.messages import AIMessage
 from google.api_core.exceptions import ResourceExhausted
 from vertexai import rag
 
-from app.utils.mlb_tools import search_player, get_player_stats
+from app.utils.mlb_tools import get_player_stats, search_player
+
 from .services import grounding_tool, llm_langchain, llm_native_grounding
 
 
-def find_player_id(player_name: str) -> Optional[int]:
+def find_player_id(player_name: str) -> int | None:
     """
     Search for a player by name and choose the best match.
 
@@ -37,18 +37,18 @@ def find_player_id(player_name: str) -> Optional[int]:
     # Exact match
     for p in players:
         if str(p.get("full_name", "")).lower().strip() == target:
-            return int(p["id"])  # type: ignore[index]
+            return int(p["id"])
 
     # Partial match
     for p in players:
         if target in str(p.get("full_name", "")).lower():
-            return int(p["id"])  # type: ignore[index]
+            return int(p["id"])
 
     # Fallback
-    return int(players[0]["id"])  # type: ignore[index]
+    return int(players[0]["id"])
 
 
-def fetch_player_stats(player_id: int) -> Dict[str, Any] | None:
+def fetch_player_stats(player_id: int) -> dict[str, Any] | None:
     """
     Fetch season statistics for a given player id.
     Returns a dictionary (or None on failure).
@@ -60,7 +60,7 @@ def fetch_player_stats(player_id: int) -> Dict[str, Any] | None:
         return None
 
 
-def generate_player_stats_answer(query: str, stats: Dict[str, Any] | None) -> str:
+def generate_player_stats_answer(query: str, stats: dict[str, Any] | None) -> str:
     """
     Construct a concise answer using provided hitting stats as context.
     Falls back to answering the query directly if no stats are provided.
@@ -153,8 +153,8 @@ def generate_grounded_answer(query: str) -> str:
 
 
 __all__ = [
-    "find_player_id",
     "fetch_player_stats",
-    "generate_player_stats_answer",
+    "find_player_id",
     "generate_grounded_answer",
+    "generate_player_stats_answer",
 ]

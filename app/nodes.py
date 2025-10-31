@@ -10,21 +10,20 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 
-from google.api_core.exceptions import ResourceExhausted
 from langchain_core.messages import AIMessage
-from vertexai import rag
 
 from app.utils.log_utils import log_end, log_start
+
 from .logic import (
-    find_player_id,
     fetch_player_stats,
+    find_player_id,
     generate_player_stats_answer,
     generate_grounded_answer,
 )
 from .services import llm_langchain
-from .graph import State
+from .planner import get_planner_agent
+from .state import State
 
 
 def extract_message_content(message: dict | object) -> str:
@@ -111,11 +110,12 @@ def route_query_node(state: State) -> dict:
     **You must respond ONLY with a single, minified JSON object and nothing else. Do not include any text, explanations, or markdown formatting before or after the JSON object.**
 
     The JSON object must have this exact format:
-    {"route": "PLAYER_STATS" | "DOCUMENT_QA", "entities": {"name": "..." | null, "team": "..." | null}}
+    {"route": "PLAYER_STATS" | "DOCUMENT_QA" | "MULTI_DOMAIN", "entities": {"name": "..." | null, "team": "..." | null}}
 
     Route Options:
     - "PLAYER_STATS": The user is asking for statistics, performance, or biographical information about a specific baseball player.
     - "DOCUMENT_QA": The user is asking for a definition, explanation, or information that would be found in a knowledge base (e.g., policies, rules, "how-to" guides).
+    - "MULTI_DOMAIN": The user needs an answer that requires combining player stats with document/policy/rules knowledge, or spans multiple domains.
 
     Examples:
     - User Query: "Tell me about Aaron Judge of the Yankees"
@@ -147,7 +147,7 @@ def route_query_node(state: State) -> dict:
         extracted_team = entities.get("team") if entities else None
 
         # Validate route is one of the expected values
-        if route not in ["PLAYER_STATS", "DOCUMENT_QA"]:
+        if route not in ["PLAYER_STATS", "DOCUMENT_QA", "MULTI_DOMAIN"]:
             logging.warning(
                 f"[route_query] Invalid route '{route}' returned. Defaulting to HELLO."
             )
@@ -251,9 +251,20 @@ def decide_route(state: State) -> str:
     Returns the route string from state, defaulting to HELLO if missing or invalid.
     """
     route = state.get("route", "HELLO")
-    if route not in ["PLAYER_STATS", "DOCUMENT_QA", "HELLO"]:
+    if route not in ["PLAYER_STATS", "DOCUMENT_QA", "MULTI_DOMAIN", "HELLO"]:
         logging.warning(
             f"[decide_route] Invalid route '{route}' in state. Defaulting to HELLO."
         )
         return "HELLO"
     return route
+
+
+def planner_node(state: State) -> dict:
+    """Invoke the planner agent for multi-domain queries and append its output messages."""
+    log_start("planner")
+    agent = get_planner_agent()
+    out = agent.invoke({"messages": state["messages"]})
+    new_messages = out.get("messages", [])
+    merged = state["messages"] + new_messages
+    log_end("planner", added=len(new_messages))
+    return {"messages": merged}
