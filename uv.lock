@@ -1978,6 +1978,7 @@ source = { editable = "." }
 dependencies = [
     { name = "google-cloud-aiplatform", extra = ["agent-engines", "evaluation"] },
     { name = "google-cloud-logging" },
+    { name = "langchain" },
     { name = "langchain-core" },
     { name = "langchain-google-vertexai" },
     { name = "langgraph" },
@@ -2018,8 +2019,9 @@ requires-dist = [
     { name = "google-cloud-aiplatform", extras = ["evaluation", "agent-engines"], specifier = ">=1.118.0,<2.0.0" },
     { name = "google-cloud-logging", specifier = ">=3.12.0,<4.0.0" },
     { name = "jupyter", marker = "extra == 'jupyter'", specifier = ">=1.0.0,<2.0.0" },
-    { name = "langchain-core", specifier = ">=0.3.67,<0.4" },
-    { name = "langchain-google-vertexai", specifier = "~=2.0.22" },
+    { name = "langchain", specifier = ">=1.0.0,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.0.0,<2.0.0" },
+    { name = "langchain-google-vertexai", specifier = ">=3.0.0,<4.0.0" },
     { name = "langgraph", specifier = ">=1,<2" },
     { name = "mypy", marker = "extra == 'lint'", specifier = ">=1.15.0,<2.0.0" },
     { name = "opentelemetry-exporter-gcp-trace", specifier = ">=1.9.0,<2.0.0" },
@@ -2042,8 +2044,22 @@ dev = [
 ]
 
 [[package]]
+name = "langchain"
+version = "1.0.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "langchain-core" },
+    { name = "langgraph" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/37/08/1708495e03eadbeef5d51e6b7cdcae4752a113a9b6313f46c70e165149c4/langchain-1.0.3.tar.gz", hash = "sha256:f96d8d185cb8cbba9793f5c648e7d5eeec688f8e3778f700d75d89d6570ae11e", size = 444810, upload-time = "2025-10-29T23:15:10.74Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/68/c8/b5dcfdde8b96369e5445f0fbac52fe8495bbd11b23ca83691d90d464eb15/langchain-1.0.3-py3-none-any.whl", hash = "sha256:a7d57964ed16278c991de4ab15516a81937a58c5ac7d7aadccb18431ad8179b2", size = 91970, upload-time = "2025-10-29T23:15:09.198Z" },
+]
+
+[[package]]
 name = "langchain-core"
-version = "0.3.79"
+version = "1.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonpatch" },
@@ -2054,14 +2070,14 @@ dependencies = [
     { name = "tenacity" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c8/99/f926495f467e0f43289f12e951655d267d1eddc1136c3cf4dd907794a9a7/langchain_core-0.3.79.tar.gz", hash = "sha256:024ba54a346dd9b13fb8b2342e0c83d0111e7f26fa01f545ada23ad772b55a60", size = 580895, upload-time = "2025-10-09T21:59:08.359Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b4/96/b298cb46643bb235240de7ec8d87d3b4ccefead6bf41ca3c48c7d5397e01/langchain_core-1.0.2.tar.gz", hash = "sha256:9aae1908cc00d50b88e812305e980e7fd06d07375590ce8da01c04037bdccd72", size = 769167, upload-time = "2025-10-29T23:13:02.732Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fc/71/46b0efaf3fc6ad2c2bd600aef500f1cb2b7038a4042f58905805630dd29d/langchain_core-0.3.79-py3-none-any.whl", hash = "sha256:92045bfda3e741f8018e1356f83be203ec601561c6a7becfefe85be5ddc58fdb", size = 449779, upload-time = "2025-10-09T21:59:06.493Z" },
+    { url = "https://files.pythonhosted.org/packages/52/54/3aed89938a42cf7115575c333647551e35adc380feed651105d2d86c22f5/langchain_core-1.0.2-py3-none-any.whl", hash = "sha256:1f4ab4a41fc2e135e5dd4b97a89af123bbdc535af8f1f0644e8e8801bc288a12", size = 469251, upload-time = "2025-10-29T23:13:00.864Z" },
 ]
 
 [[package]]
 name = "langchain-google-vertexai"
-version = "2.0.28"
+version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bottleneck" },
@@ -2075,14 +2091,14 @@ dependencies = [
     { name = "pydantic" },
     { name = "validators" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/54/cf/0f19c7f6bf336f4681ee63e9ba91d94f112ced688825ac22584a3b72b6f8/langchain_google_vertexai-2.0.28.tar.gz", hash = "sha256:35fcd366752b6a5b8fa490c80816b9e8d372edc39fb5b3ad177b1d4f269781f2", size = 88116, upload-time = "2025-08-04T17:20:56.669Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/49/05/a0c19b1e1de578ff88a80108b74d478d79ff3cfdaba11ec076ea04d9979f/langchain_google_vertexai-3.0.1.tar.gz", hash = "sha256:f18249bbdd8a3bcff1f38d40ca7ae2132edcb8d7af51896581dd24c835940e69", size = 147908, upload-time = "2025-10-23T20:24:46.254Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/66/34/ee3d5aec5b1fed6961d2584ecb8d366849edf44ba983824320705658c2cb/langchain_google_vertexai-2.0.28-py3-none-any.whl", hash = "sha256:8dc7a5cfb50b19fa455a284bed9f4f330e0eb462f3251773576b207780eb7709", size = 103964, upload-time = "2025-08-04T17:20:55.469Z" },
+    { url = "https://files.pythonhosted.org/packages/93/13/059e1620f95559398ed42cf0b4f564fe33f50356e58c1fb7c92581deb219/langchain_google_vertexai-3.0.1-py3-none-any.whl", hash = "sha256:d6a94857a2413c1a81fe8d20f2a40e9ce999120fee93033a00ce50351e24855a", size = 102204, upload-time = "2025-10-23T20:24:45.156Z" },
 ]
 
 [[package]]
 name = "langgraph"
-version = "1.0.1"
+version = "1.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
@@ -2092,9 +2108,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/20/7c/a0f4211f751b8b37aae2d88c6243ceb14027ca9ebf00ac8f3b210657af6a/langgraph-1.0.1.tar.gz", hash = "sha256:4985b32ceabb046a802621660836355dfcf2402c5876675dc353db684aa8f563", size = 480245, upload-time = "2025-10-20T18:51:59.839Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/25/18e6e056ee1a8af64fcab441b4a3f2e158399935b08f148c7718fc42ecdb/langgraph-1.0.2.tar.gz", hash = "sha256:dae1af08d6025cb1fcaed68f502c01af7d634d9044787c853a46c791cfc52f67", size = 482660, upload-time = "2025-10-29T18:38:28.374Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b1/3c/acc0956a0da96b25a2c5c1a85168eacf1253639a04ed391d7a7bcaae5d6c/langgraph-1.0.1-py3-none-any.whl", hash = "sha256:892f04f64f4889abc80140265cc6bd57823dd8e327a5eef4968875f2cd9013bd", size = 155415, upload-time = "2025-10-20T18:51:58.321Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/b1/9f4912e13d4ed691f2685c8a4b764b5a9237a30cca0c5782bc213d9f0a9a/langgraph-1.0.2-py3-none-any.whl", hash = "sha256:b3d56b8c01de857b5fb1da107e8eab6e30512a377685eeedb4f76456724c9729", size = 156751, upload-time = "2025-10-29T18:38:26.577Z" },
 ]
 
 [[package]]
@@ -2112,15 +2128,15 @@ wheels = [
 
 [[package]]
 name = "langgraph-prebuilt"
-version = "1.0.1"
+version = "1.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b2/b6/2bcb992acf67713a3557e51c1955854672ec6c1abe6ba51173a87eb8d825/langgraph_prebuilt-1.0.1.tar.gz", hash = "sha256:ecbfb9024d9d7ed9652dde24eef894650aaab96bf79228e862c503e2a060b469", size = 119918, upload-time = "2025-10-20T18:49:55.991Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/2f/b940590436e07b3450fe6d791aad5e581363ad536c4f1771e3ba46530268/langgraph_prebuilt-1.0.2.tar.gz", hash = "sha256:9896dbabf04f086eb59df4294f54ab5bdb21cd78e27e0a10e695dffd1cc6097d", size = 142075, upload-time = "2025-10-29T18:29:00.401Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/47/9ffd10882403020ea866e381de7f8e504a78f606a914af7f8244456c7783/langgraph_prebuilt-1.0.1-py3-none-any.whl", hash = "sha256:8c02e023538f7ef6ad5ed76219ba1ab4f6de0e31b749e4d278f57a8a95eec9f7", size = 28458, upload-time = "2025-10-20T18:49:54.723Z" },
+    { url = "https://files.pythonhosted.org/packages/27/2f/9a7d00d4afa036e65294059c7c912002fb72ba5dbbd5c2a871ca06360278/langgraph_prebuilt-1.0.2-py3-none-any.whl", hash = "sha256:d9499f7c449fb637ee7b87e3f6a3b74095f4202053c74d33894bd839ea4c57c7", size = 34286, upload-time = "2025-10-29T18:28:59.26Z" },
 ]
 
 [[package]]

@@ -5,7 +5,9 @@ This module defines the graph structure and wires together
 all the node functions from nodes.py.
 """
 
+import logging
 from langgraph.graph import END, StateGraph
+from .utils.log_utils import ensure_root_logger
 
 from .nodes import (
     decide_route,
@@ -16,6 +18,7 @@ from .nodes import (
 from .state import State
 from .subgraphs import build_document_qa_subgraph, build_player_stats_subgraph
 
+ensure_root_logger(logging.INFO)
 _graph = StateGraph(State)
 _graph.add_node("router", route_query_node)
 _graph.add_node("hello", hello_node)

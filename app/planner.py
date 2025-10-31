@@ -8,6 +8,7 @@ to lazily construct the agent.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .agent_tools import (
@@ -27,7 +28,7 @@ _PLANNER_CACHE: Any = None
 
 
 def get_planner_agent() -> Any:
-    """Lazily build and cache the planner agent. Falls back to a stub if LangChain is missing."""
+    """Lazily build and cache the planner agent. Falls back to a stub only if LangChain is missing."""
     global _PLANNER_CACHE
     if _PLANNER_CACHE is not None:
         return _PLANNER_CACHE
@@ -35,6 +36,7 @@ def get_planner_agent() -> Any:
     try:
         from langchain.agents import create_agent
 
+        logging.info("[planner] Creating agent with create_agent (LangChain v1)...")
         agent = create_agent(
             model=llm_langchain,
             tools=[
@@ -44,13 +46,28 @@ def get_planner_agent() -> Any:
             ],
             system_prompt=SYSTEM_PROMPT,
         )
-    except Exception:
+        logging.info("[planner] Agent created successfully")
+    except ImportError as e:
+        # Only catch ImportError for missing langchain package
+        logging.warning(
+            "[planner] LangChain not available (ImportError: %s), using stub agent",
+            e,
+        )
+
         # Minimal stub agent for environments without `langchain` installed
         class _Stub:
             def invoke(self, x: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
                 return {"messages": []}
 
         agent = _Stub()
+    except Exception as e:
+        # For any other exception, log and re-raise - fail fast
+        logging.error(
+            "[planner] Failed to create agent (unexpected error: %s)",
+            e,
+            exc_info=True,
+        )
+        raise
 
     _PLANNER_CACHE = agent
     return agent

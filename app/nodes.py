@@ -268,37 +268,71 @@ def planner_node(state: State) -> dict:
     log_start("planner")
     try:
         agent = get_planner_agent()
+        logging.info("[planner] Invoking planner agent...")
         out = agent.invoke({"messages": state["messages"]})
         new_messages = out.get("messages", [])
+
+        # Log tool calls found in the messages
+        for i, msg in enumerate(new_messages):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    logging.info(
+                        "[planner] Agent made tool call #%d: tool=%s, args=%s",
+                        i,
+                        tc.get("name")
+                        if isinstance(tc, dict)
+                        else getattr(tc, "name", "unknown"),
+                        str(tc.get("args", {}))[:200]
+                        if isinstance(tc, dict)
+                        else str(getattr(tc, "args", {}))[:200],
+                    )
+
         if new_messages:
             merged = state["messages"] + new_messages
             log_end("planner", added=len(new_messages))
             return {"messages": merged}
+        else:
+            logging.warning(
+                "[planner] Agent returned empty messages list, using fallback"
+            )
     except Exception as exc:
-        logging.warning("[planner] agent invocation failed: %s", exc)
+        logging.warning("[planner] Agent invocation failed: %s", exc, exc_info=True)
 
     # --- Fallback path: synthesize answer directly ---
+    logging.info("[planner] Fallback: synthesizing combined answer directly")
     try:
         last = state["messages"][-1]
         query = extract_message_content(last)
+        logging.info(
+            "[planner] Fallback: extracted query=%r",
+            query[:100] if len(query) > 100 else query,
+        )
 
         # Reuse extracted name if present
         name = state.get("extracted_name") or None
         if not name:
             m = re.search(r"\b([A-Z][a-z]+\s+[A-Z][a-z]+)\b", query)
             name = m.group(1) if m else None
+        logging.info("[planner] Fallback: player_name=%r", name)
 
+        logging.info("[planner] Fallback: fetching player stats...")
         pid = find_player_id(name) if name else None
         stats = fetch_player_stats(pid) if pid else None
+        logging.info("[planner] Fallback: generating stats answer...")
         stats_answer = generate_player_stats_answer(query, stats)
+
+        logging.info("[planner] Fallback: generating RAG answer...")
         doc_answer = generate_grounded_answer(query)
-        combined = (
-            f"Answer (combined):\n\n{doc_answer}\n\n---\n\n{stats_answer}"
-        )
+
+        combined = f"Answer (combined):\n\n{doc_answer}\n\n---\n\n{stats_answer}"
         res = {"messages": [AIMessage(content=combined)]}
         log_end("planner", fallback=True)
         return res
     except Exception as exc:
-        logging.error("[planner] fallback failed: %s", exc)
+        logging.error("[planner] Fallback failed: %s", exc, exc_info=True)
         log_end("planner", error=True)
-        return {"messages": [AIMessage(content="Sorry, I hit an error planning the answer.")]}
+        return {
+            "messages": [
+                AIMessage(content="Sorry, I hit an error planning the answer.")
+            ]
+        }
