@@ -1,9 +1,6 @@
-from typing import cast
-
 from langchain_core.messages import HumanMessage
 
 from app.graph import agent
-from app.state import State
 
 # This file is now the main entry point for your application.
 # It's kept clean and simple.

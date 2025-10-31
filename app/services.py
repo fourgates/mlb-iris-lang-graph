@@ -7,9 +7,7 @@ from . import config
 
 # --- LLM Clients ---
 llm_langchain = ChatVertexAI(
-    model_name=config.LLM,
-    location=config.LOCATION, 
-    temperature=0.1
+    model_name=config.LLM, location=config.LOCATION, temperature=0.1
 )
 
 llm_native_grounding = GenerativeModel(config.LLM)

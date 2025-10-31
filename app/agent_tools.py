@@ -4,13 +4,13 @@ Agent tools wrapping shared logic functions for the planner agent.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from langchain_core.tools import tool
 
 from .logic import (
-    find_player_id,
     fetch_player_stats,
+    find_player_id,
     generate_grounded_answer,
 )
 
@@ -23,7 +23,7 @@ def search_for_player(player_name: str) -> int | str:
 
 
 @tool
-def get_player_statistics(player_id: int) -> Dict[str, Any] | str:
+def get_player_statistics(player_id: int) -> dict[str, Any] | str:
     """Fetches season statistics for a given player ID."""
     stats = fetch_player_stats(player_id)
     return stats if stats is not None else "no_stats"
@@ -36,9 +36,7 @@ def query_document_knowledge_base(query: str) -> str:
 
 
 __all__ = [
-    "search_for_player",
     "get_player_statistics",
     "query_document_knowledge_base",
+    "search_for_player",
 ]
-
-

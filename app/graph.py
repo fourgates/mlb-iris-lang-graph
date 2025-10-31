@@ -10,8 +10,8 @@ from langgraph.graph import END, StateGraph
 from .nodes import (
     decide_route,
     hello_node,
-    route_query_node,
     planner_node,
+    route_query_node,
 )
 from .state import State
 from .subgraphs import build_document_qa_subgraph, build_player_stats_subgraph

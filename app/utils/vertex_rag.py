@@ -1,7 +1,7 @@
 import os
 import time
 from dataclasses import dataclass
-from typing import List, Tuple, Any
+from typing import Any
 
 from google.api_core.exceptions import ServiceUnavailable
 from vertexai import init as vertex_init
@@ -63,21 +63,27 @@ class VertexRAGClient:
                 )
                 # Log raw result shape and a few previews
                 try:
-                    contexts = getattr(getattr(result, "contexts", None), "contexts", []) or []
+                    contexts = (
+                        getattr(getattr(result, "contexts", None), "contexts", []) or []
+                    )
                     from_len = len(contexts)
-                    print(f"[RAG:_retrieve] query={query_text!r} corpora={self.rag_corpus_name} top_k={self.top_k} contexts={from_len}")
+                    print(
+                        f"[RAG:_retrieve] query={query_text!r} corpora={self.rag_corpus_name} top_k={self.top_k} contexts={from_len}"
+                    )
                     for i, c in enumerate(contexts[:3], 1):
                         src = getattr(c, "source_uri", None)
                         dist = getattr(c, "distance", None)
                         txt = getattr(c, "text", "")
-                        print(f"[RAG:_retrieve] #{i} source={src!r} distance={dist} preview={txt[:500]!r}")
+                        print(
+                            f"[RAG:_retrieve] #{i} source={src!r} distance={dist} preview={txt[:500]!r}"
+                        )
                 except Exception:
                     pass
                 return result
             except ServiceUnavailable as e:
                 last_exc = e
                 time.sleep(1.0 * (2**attempt))
-            except Exception as e:  # noqa: BLE001 - surface message to caller
+            except Exception as e:
                 last_exc = e
                 break
         if last_exc is not None:
@@ -85,13 +91,15 @@ class VertexRAGClient:
         return None
 
     @staticmethod
-    def _build_citations(raw_contexts: List[object]) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+    def _build_citations(
+        raw_contexts: list[object],
+    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         # Returns (tagged_snippets, sources)
         # tagged_snippets: [(tag, snippet)]
         # sources: [(tag, uri)]
         citation_map: dict[str, str] = {}
-        tagged_snippets: List[Tuple[str, str]] = []
-        sources: List[Tuple[str, str]] = []
+        tagged_snippets: list[tuple[str, str]] = []
+        sources: list[tuple[str, str]] = []
 
         if not raw_contexts:
             return tagged_snippets, sources
@@ -132,9 +140,7 @@ class VertexRAGClient:
         if not tagged_snippets:
             return "No relevant information found in the RAG corpus."
 
-        lines: List[str] = [
-            f"({tag}) {text}" for tag, text in tagged_snippets
-        ]
+        lines: list[str] = [f"({tag}) {text}" for tag, text in tagged_snippets]
 
         if sources:
             lines.append("")
@@ -143,5 +149,3 @@ class VertexRAGClient:
                 lines.append(f"({tag}) {uri}")
 
         return "\n".join(lines)
-
-

@@ -20,7 +20,7 @@ def fmt_fields(fields: dict[str, Any]) -> str:
     parts: list[str] = []
     for k, v in fields.items():
         try:
-            parts.append(f"{k}={repr(v)}")
+            parts.append(f"{k}={v!r}")
         except Exception:
             parts.append(f"{k}=<unrepr>")
     return " ".join(parts)
@@ -34,5 +34,3 @@ def log_start(node: str, **fields: Any) -> None:
 def log_end(node: str, **fields: Any) -> None:
     logging.info("[%s] END %s", node, fmt_fields(fields))
     logging.info("")
-
-

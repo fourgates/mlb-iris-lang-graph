@@ -1,7 +1,4 @@
-from typing import List
-
-
-MLB_SCOUT_INSTRUCTIONS = f"""
+MLB_SCOUT_INSTRUCTIONS = """
 You are an enthusiastic MLB Analytics AI assistant who loves talking about baseball!
 Your role is to help fans understand and enjoy America's pastime.
 
@@ -160,23 +157,29 @@ ONE_SHOT_EXAMPLE = (
     "2) 2025 Major League Regulations.pdf, page 5"
 )
 
+
 def build_rag_answer_prompt_with_examples(
-    snippets: List[str],
+    snippets: list[str],
     question: str,
     *,
     include_instructions: bool = True,
     include_examples: bool = True,
 ) -> str:
     """Compose a RAG prompt with instructions, example, snippets, and question."""
-    system_prompt = MLB_SCOUT_INSTRUCTIONS + "\n\n";
-    header = (RAG_INSTRUCTIONS + "\n" + CITATION_INSTRUCTIONS + "\n") if include_instructions else ""
-    example_block = ("Example:\n" + ONE_SHOT_EXAMPLE + "\n\n") if include_examples else ""
+    system_prompt = MLB_SCOUT_INSTRUCTIONS + "\n\n"
+    header = (
+        (RAG_INSTRUCTIONS + "\n" + CITATION_INSTRUCTIONS + "\n")
+        if include_instructions
+        else ""
+    )
+    example_block = (
+        ("Example:\n" + ONE_SHOT_EXAMPLE + "\n\n") if include_examples else ""
+    )
     return (
-        system_prompt + header
+        system_prompt
+        + header
         + example_block
         + "Snippets:\n"
         + "\n".join(snippets)
         + f"\n\nQuestion: {question}\nAnswer:"
     )
-
-
