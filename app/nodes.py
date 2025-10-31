@@ -17,9 +17,13 @@ from langchain_core.messages import AIMessage
 from vertexai import rag
 
 from app.utils.log_utils import log_end, log_start
-from app.utils.mlb_tools import get_player_stats, search_player
-
-from .services import grounding_tool, llm_langchain, llm_native_grounding
+from .logic import (
+    find_player_id,
+    fetch_player_stats,
+    generate_player_stats_answer,
+    generate_grounded_answer,
+)
+from .services import llm_langchain
 from .graph import State
 
 
@@ -67,111 +71,9 @@ def generate_rag_answer(state: State) -> dict:
     last_message = state["messages"][-1]
     query = extract_message_content(last_message)
     logging.info("[generate_rag_answer] query=%r", query)
-
-    # --- START of new retry logic ---
-    max_retries = 3
-    base_delay = 5  # seconds
-
-    for attempt in range(max_retries):
-        try:
-            # Make a single, grounded API call
-            response = llm_native_grounding.generate_content(
-                query,
-                tools=[grounding_tool],
-            )
-
-            # Verify response has candidates before accessing
-            if not response.candidates or len(response.candidates) == 0:
-                log_end("generate_rag_answer", note="No candidates in response.")
-                raw_text = (
-                    response.text or "I could not find any information on that topic."
-                )
-                return {"messages": [AIMessage(content=raw_text)]}
-
-            candidate = response.candidates[0]
-
-            # Check if grounding_metadata exists
-            if (
-                not hasattr(candidate, "grounding_metadata")
-                or not candidate.grounding_metadata
-            ):
-                log_end("generate_rag_answer", note="No grounding metadata returned.")
-                raw_text = (
-                    response.text or "I could not find any information on that topic."
-                )
-                return {"messages": [AIMessage(content=raw_text)]}
-
-            # Check if grounding_supports is empty
-            grounding_supports = list(candidate.grounding_metadata.grounding_supports)
-            grounding_chunks = list(candidate.grounding_metadata.grounding_chunks)
-
-            if not grounding_supports:
-                log_end("generate_rag_answer", note="No grounding supports returned.")
-                raw_text = (
-                    response.text or "I could not find any information on that topic."
-                )
-                return {"messages": [AIMessage(content=raw_text)]}
-
-            # Verify candidate has content with parts before accessing
-            if not hasattr(candidate, "content") or not candidate.content:
-                log_end("generate_rag_answer", note="No content in candidate.")
-                raw_text = (
-                    response.text or "I could not find any information on that topic."
-                )
-                return {"messages": [AIMessage(content=raw_text)]}
-
-            if (
-                not hasattr(candidate.content, "parts")
-                or not candidate.content.parts
-                or len(candidate.content.parts) == 0
-            ):
-                log_end("generate_rag_answer", note="No content parts in candidate.")
-                raw_text = (
-                    response.text or "I could not find any information on that topic."
-                )
-                return {"messages": [AIMessage(content=raw_text)]}
-
-            # Use the helper function from `vertexai.rag`
-            rag_response = rag.add_inline_citations_and_references(
-                original_text_str=candidate.content.parts[0].text,
-                grounding_supports=grounding_supports,
-                grounding_chunks=grounding_chunks,
-            )
-
-            # Combine the answer and sources into a single, clean message
-            final_content = rag_response.cited_text
-            if rag_response.final_bibliography:
-                final_content += "\n\n**Sources:**\n" + rag_response.final_bibliography
-
-            log_end(
-                "generate_rag_answer", response_chars=len(final_content), success=True
-            )
-            return {
-                "messages": [AIMessage(content=final_content)]
-            }  # Success! Exit the loop and function.
-
-        except ResourceExhausted as e:
-            logging.warning(
-                f"Attempt {attempt + 1}/{max_retries} failed with ResourceExhausted error: {e}"
-            )
-            if attempt + 1 == max_retries:
-                logging.error("Max retries reached. Failing the request.")
-                # You could return a user-friendly error message here
-                error_message = (
-                    "The service is currently busy. Please try again in a few moments."
-                )
-                return {"messages": [AIMessage(content=error_message)]}
-
-            # Exponential backoff: wait 5s, 10s, etc. before the next try
-            time.sleep(base_delay * (2**attempt))
-
-    # This part should ideally not be reached, but as a fallback:
-    return {
-        "messages": [
-            AIMessage(content="An unexpected error occurred after multiple retries.")
-        ]
-    }
-    # --- END of new retry logic ---
+    final_content = generate_grounded_answer(query)
+    log_end("generate_rag_answer", response_chars=len(final_content), success=True)
+    return {"messages": [AIMessage(content=final_content)]}
 
 
 def hello_node(state: State) -> dict:
@@ -289,35 +191,9 @@ def player_search_node(state: State) -> dict:
         name = m.group(1) if m else q
     logging.info("[player_search] query=%r extracted_name=%r", q, name)
 
-    res = search_player(name, only_active=True)
-    players = res.get("players", [])
-    logging.info(
-        "[player_search] matches=%d top=%s",
-        len(players),
-        [(p.get("full_name"), p.get("id")) for p in players[:3]],
-    )
-
-    if not players:
-        return {"player_id": None}
-
-    name_lc = name.lower().strip()
-    chosen = None
-    for p in players:
-        if str(p.get("full_name", "")).lower().strip() == name_lc:
-            chosen = p
-            break
-    if chosen is None:
-        for p in players:
-            if name_lc in str(p.get("full_name", "")).lower():
-                chosen = p
-                break
-    if chosen is None:
-        chosen = players[0]
-
-    logging.info(
-        "[player_search] chosen=%r id=%s", chosen.get("full_name"), chosen.get("id")
-    )
-    out = {"player_id": int(chosen["id"])}
+    player_id = find_player_id(name)
+    logging.info("[player_search] chosen_id=%r", player_id)
+    out = {"player_id": int(player_id) if player_id is not None else None}
     log_end("player_search", **out)
     return out
 
@@ -328,7 +204,7 @@ def player_stats_node(state: State) -> dict:
     if not pid:
         log_end("player_stats", no_player_id=True)
         return {"stats": None}
-    stats = get_player_stats(pid)
+    stats = fetch_player_stats(pid)
     try:
         hitting = (
             stats.get("stats", {}).get("hitting_season", {})
@@ -360,29 +236,11 @@ def answer_player_stats_query(state: State) -> dict:
 
     # This node generates responses using player stats as context
     st = state.get("stats") or {}
-    hitting = (
-        st.get("stats", {}).get("hitting_season", {}) if isinstance(st, dict) else {}
-    )
-    if hitting:
-        prompt = (
-            f"You are an expert MLB analyst. Here is the player's season hitting data:\n"
-            f"AVG: {hitting.get('avg', '.000')}\n"
-            f"HR: {hitting.get('home_runs', 0)}\n"
-            f"OPS: {hitting.get('ops', '.000')}\n"
-            f"RBI: {hitting.get('rbi', 0)}\n\n"
-            f"Based on this data, answer the user's question.\n"
-            f"Question: {query}\nAnswer:"
-        )
-    else:
-        prompt = query
-    logging.info(
-        "[answer_player_stats_query] prompt_len=%d preview=%r", len(prompt), prompt
-    )
-    out = llm_langchain.invoke(prompt)
-    res = {"messages": [AIMessage(content=out.content)]}
+    content = generate_player_stats_answer(query, st)
+    res = {"messages": [AIMessage(content=content)]}
     log_end(
         "answer_player_stats_query",
-        response_chars=len(out.content) if hasattr(out, "content") else None,
+        response_chars=len(content),
     )
     return res
 
