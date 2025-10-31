@@ -260,11 +260,45 @@ def decide_route(state: State) -> str:
 
 
 def planner_node(state: State) -> dict:
-    """Invoke the planner agent for multi-domain queries and append its output messages."""
+    """Invoke the planner agent for multi-domain queries and append its output messages.
+
+    Fallback: if the agent returns no messages (e.g., missing LangChain at runtime),
+    synthesize a combined answer by calling the logic functions directly.
+    """
     log_start("planner")
-    agent = get_planner_agent()
-    out = agent.invoke({"messages": state["messages"]})
-    new_messages = out.get("messages", [])
-    merged = state["messages"] + new_messages
-    log_end("planner", added=len(new_messages))
-    return {"messages": merged}
+    try:
+        agent = get_planner_agent()
+        out = agent.invoke({"messages": state["messages"]})
+        new_messages = out.get("messages", [])
+        if new_messages:
+            merged = state["messages"] + new_messages
+            log_end("planner", added=len(new_messages))
+            return {"messages": merged}
+    except Exception as exc:
+        logging.warning("[planner] agent invocation failed: %s", exc)
+
+    # --- Fallback path: synthesize answer directly ---
+    try:
+        last = state["messages"][-1]
+        query = extract_message_content(last)
+
+        # Reuse extracted name if present
+        name = state.get("extracted_name") or None
+        if not name:
+            m = re.search(r"\b([A-Z][a-z]+\s+[A-Z][a-z]+)\b", query)
+            name = m.group(1) if m else None
+
+        pid = find_player_id(name) if name else None
+        stats = fetch_player_stats(pid) if pid else None
+        stats_answer = generate_player_stats_answer(query, stats)
+        doc_answer = generate_grounded_answer(query)
+        combined = (
+            f"Answer (combined):\n\n{doc_answer}\n\n---\n\n{stats_answer}"
+        )
+        res = {"messages": [AIMessage(content=combined)]}
+        log_end("planner", fallback=True)
+        return res
+    except Exception as exc:
+        logging.error("[planner] fallback failed: %s", exc)
+        log_end("planner", error=True)
+        return {"messages": [AIMessage(content="Sorry, I hit an error planning the answer.")]}
