@@ -23,24 +23,22 @@ class State(TypedDict):
 
 # Import nodes after State is defined (needed for type hints and to avoid circular import issues)
 from .nodes import (
-    answer_player_stats_query,
     decide_route,
-    generate_rag_answer,
     hello_node,
-    player_search_node,
-    player_stats_node,
     route_query_node,
 )
+from .subgraphs import build_player_stats_subgraph, build_document_qa_subgraph
 
 
-# Build the graph
 _graph = StateGraph(State)
 _graph.add_node("router", route_query_node)
 _graph.add_node("hello", hello_node)
-_graph.add_node("generate_rag_answer", generate_rag_answer)
-_graph.add_node("player_search", player_search_node)
-_graph.add_node("player_stats", player_stats_node)
-_graph.add_node("answer_player_stats_query", answer_player_stats_query)
+
+# Compile subgraphs and add as nodes
+player_stats_sg = build_player_stats_subgraph(State)
+document_qa_sg = build_document_qa_subgraph(State)
+_graph.add_node("player_stats_sg", player_stats_sg)
+_graph.add_node("document_qa_sg", document_qa_sg)
 
 # Set entry point to router
 _graph.set_entry_point("router")
@@ -50,19 +48,11 @@ _graph.add_conditional_edges(
     "router",
     decide_route,
     {
-        "DOCUMENT_QA": "generate_rag_answer",
-        "PLAYER_STATS": "player_search",
+        "DOCUMENT_QA": "document_qa_sg",
+        "PLAYER_STATS": "player_stats_sg",
         "HELLO": "hello",
     },
 )
-
-# Define the player tool-use path
-_graph.add_edge("player_search", "player_stats")
-_graph.add_edge("player_stats", "answer_player_stats_query")
-_graph.add_edge("answer_player_stats_query", END)
-
-# Define the RAG path
-_graph.add_edge("generate_rag_answer", END)
 
 # Define the hello path (error handling)
 _graph.add_edge("hello", END)
