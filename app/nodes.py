@@ -11,7 +11,7 @@ import json
 import logging
 import re
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 
 from app.utils.log_utils import log_end, log_start
 
@@ -274,7 +274,7 @@ def planner_node(state: State) -> dict:
 
         # Extract only the user's query message to avoid message format issues with Gemini
         # Pass only the first user message to start fresh (avoids tool call/response mismatches)
-        user_messages = [
+        user_messages: list[AnyMessage] = [
             msg for msg in state["messages"] if isinstance(msg, HumanMessage)
         ]
         if not user_messages:
@@ -406,8 +406,18 @@ def verify_answer_node(state: State) -> dict:
             log_end("verify_answer", status="OK", reason="no_messages")
             return result
 
-        first_msg = state["messages"][0]
-        query = extract_message_content(first_msg)
+        query: str | None = None
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, HumanMessage):
+                query = extract_message_content(msg)
+                break
+
+        if query is None:
+            logging.warning(
+                "[verify_answer] No HumanMessage found in state; defaulting to first message"
+            )
+            first_msg = state["messages"][0]
+            query = extract_message_content(first_msg)
 
         # Extract final answer from last AIMessage
         final_answer = None
