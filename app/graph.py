@@ -7,6 +7,7 @@ all the node functions from nodes.py.
 
 import logging
 
+from langgraph.cache.memory import InMemoryCache
 from langgraph.graph import END, StateGraph
 
 from .nodes import (
@@ -82,4 +83,4 @@ _graph.add_conditional_edges(
 )
 
 
-agent = _graph.compile(name="Grounding Chat Graph")
+agent = _graph.compile(name="Grounding Chat Graph", cache=InMemoryCache())

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from functools import lru_cache
 from typing import Any
 
 from google.api_core.exceptions import ResourceExhausted
@@ -91,11 +92,9 @@ def generate_player_stats_answer(query: str, stats: dict[str, Any] | None) -> st
     return content
 
 
-def generate_grounded_answer(query: str) -> str:
-    """
-    Generate a grounded answer using Vertex AI native grounding, with basic retries
-    and inline citations formatting.
-    """
+@lru_cache(maxsize=128)
+def _generate_grounded_answer_cached(query: str) -> str:
+    """Internal cached implementation for grounded answers."""
     max_retries = 3
     base_delay = 5  # seconds
 
@@ -150,6 +149,17 @@ def generate_grounded_answer(query: str) -> str:
             time.sleep(base_delay * (2**attempt))
 
     return "An unexpected error occurred after multiple retries."
+
+
+def generate_grounded_answer(query: str) -> str:
+    """
+    Generate a grounded answer using Vertex AI native grounding.
+
+    Results are cached per process to avoid repeated calls when the same
+    question is asked multiple times during replans or across requests.
+    """
+
+    return _generate_grounded_answer_cached(query)
 
 
 __all__ = [

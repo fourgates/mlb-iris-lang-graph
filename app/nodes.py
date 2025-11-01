@@ -428,12 +428,16 @@ def verify_answer_node(state: State) -> dict:
 
         if not final_answer:
             logging.warning("[verify_answer] No AIMessage found in state")
+            fallback_message = "I wasn't able to generate a full answer yet. Could you clarify or try again?"
             result = {
                 "verification_status": "OK",
                 "replan_attempts": state.get("replan_attempts", 0),
             }
             log_end("verify_answer", status="OK", reason="no_answer")
-            return result
+            return {
+                **result,
+                "messages": [AIMessage(content=fallback_message)],
+            }
 
         # Judge the answer
         judge_result = judge_answer(query, final_answer)
@@ -471,6 +475,14 @@ def verify_answer_node(state: State) -> dict:
         return {
             "verification_status": "OK",
             "replan_attempts": state.get("replan_attempts", 0),
+            "messages": [
+                AIMessage(
+                    content=(
+                        "I ran into an issue while double-checking the answer, but I'm "
+                        "returning the latest response I have."
+                    )
+                )
+            ],
         }
 
 

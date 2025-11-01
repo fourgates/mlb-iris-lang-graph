@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import CachePolicy
 
 # Import node functions directly
 from .nodes import (
@@ -41,7 +42,11 @@ def build_player_stats_subgraph(State: type) -> Any:
 def build_document_qa_subgraph(State: type) -> Any:
     """Create DOCUMENT_QA subgraph: generate_rag_answer -> verify -> END."""
     builder: StateGraph = StateGraph(State)
-    builder.add_node("generate_rag_answer", generate_rag_answer)
+    builder.add_node(
+        "generate_rag_answer",
+        generate_rag_answer,
+        cache_policy=CachePolicy(ttl=300),
+    )
     builder.add_node("verify_answer", verify_answer_node)
     builder.add_edge(START, "generate_rag_answer")
     builder.add_edge("generate_rag_answer", "verify_answer")
