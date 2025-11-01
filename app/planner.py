@@ -33,6 +33,7 @@ def get_planner_agent() -> Any:
     if _PLANNER_CACHE is not None:
         return _PLANNER_CACHE
 
+    agent: Any
     try:
         from langchain.agents import create_agent
 

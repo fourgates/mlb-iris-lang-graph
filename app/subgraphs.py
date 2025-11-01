@@ -17,29 +17,34 @@ from .nodes import (
     generate_rag_answer,
     player_search_node,
     player_stats_node,
+    verify_answer_node,
 )
 
 
 def build_player_stats_subgraph(State: type) -> Any:
-    """Create PLAYER_STATS subgraph: search -> stats -> answer -> END."""
+    """Create PLAYER_STATS subgraph: search -> stats -> answer -> verify -> END."""
     builder: StateGraph = StateGraph(State)
     builder.add_node("player_search", player_search_node)
     builder.add_node("player_stats", player_stats_node)
     builder.add_node("answer_player_stats_query", answer_player_stats_query)
+    builder.add_node("verify_answer", verify_answer_node)
 
     builder.add_edge(START, "player_search")
     builder.add_edge("player_search", "player_stats")
     builder.add_edge("player_stats", "answer_player_stats_query")
-    builder.add_edge("answer_player_stats_query", END)
+    builder.add_edge("answer_player_stats_query", "verify_answer")
+    builder.add_edge("verify_answer", END)
 
     return builder.compile()
 
 
 def build_document_qa_subgraph(State: type) -> Any:
-    """Create DOCUMENT_QA subgraph: generate_rag_answer -> END."""
+    """Create DOCUMENT_QA subgraph: generate_rag_answer -> verify -> END."""
     builder: StateGraph = StateGraph(State)
     builder.add_node("generate_rag_answer", generate_rag_answer)
+    builder.add_node("verify_answer", verify_answer_node)
     builder.add_edge(START, "generate_rag_answer")
-    builder.add_edge("generate_rag_answer", END)
+    builder.add_edge("generate_rag_answer", "verify_answer")
+    builder.add_edge("verify_answer", END)
 
     return builder.compile()

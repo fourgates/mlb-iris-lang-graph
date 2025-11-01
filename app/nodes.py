@@ -11,10 +11,11 @@ import json
 import logging
 import re
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.utils.log_utils import log_end, log_start
 
+from . import config
 from .logic import (
     fetch_player_stats,
     find_player_id,
@@ -24,6 +25,7 @@ from .logic import (
 from .planner import get_planner_agent
 from .services import llm_langchain
 from .state import State
+from .verification import judge_answer
 
 
 def extract_message_content(message: dict | object) -> str:
@@ -269,7 +271,52 @@ def planner_node(state: State) -> dict:
     try:
         agent = get_planner_agent()
         logging.info("[planner] Invoking planner agent...")
-        out = agent.invoke({"messages": state["messages"]})
+
+        # Extract only the user's query message to avoid message format issues with Gemini
+        # Pass only the first user message to start fresh (avoids tool call/response mismatches)
+        user_messages = [
+            msg for msg in state["messages"] if isinstance(msg, HumanMessage)
+        ]
+        if not user_messages:
+            # Fallback: use the first message if no HumanMessage found
+            user_messages = [state["messages"][0]] if state["messages"] else []
+
+        # If this is a replan attempt, add context about what was missing
+        verification_reason = state.get("verification_reason")
+        replan_attempts = state.get("replan_attempts", 0)
+        if verification_reason and replan_attempts > 0:
+            replan_context = (
+                f"Previous attempt was incomplete. Feedback: {verification_reason}. "
+                f"Please provide a more complete answer addressing all parts of the question."
+            )
+            user_messages.insert(0, SystemMessage(content=replan_context))
+            logging.info(
+                "[planner] REPLAN ATTEMPT #%d: Adding feedback context to guide improvement",
+                replan_attempts,
+            )
+            logging.info(
+                "[planner] Replan feedback: %s",
+                verification_reason[:200]
+                if len(verification_reason) > 200
+                else verification_reason,
+            )
+            logging.info(
+                "[planner] Full replan context message: %s",
+                replan_context[:300] if len(replan_context) > 300 else replan_context,
+            )
+        elif replan_attempts > 0:
+            logging.warning(
+                "[planner] REPLAN ATTEMPT #%d but no verification_reason found in state",
+                replan_attempts,
+            )
+
+        logging.info(
+            "[planner] Passing %d message(s) to agent (filtered from %d total)",
+            len(user_messages),
+            len(state["messages"]),
+        )
+
+        out = agent.invoke({"messages": user_messages})
         new_messages = out.get("messages", [])
 
         # Log tool calls found in the messages
@@ -336,3 +383,121 @@ def planner_node(state: State) -> dict:
                 AIMessage(content="Sorry, I hit an error planning the answer.")
             ]
         }
+
+
+def verify_answer_node(state: State) -> dict:
+    """
+    Verify if the final answer fully addresses the user's query.
+
+    Extracts the original query and final answer, then uses judge_answer()
+    to determine if the answer is complete. Updates replan_attempts and
+    verification_status accordingly.
+    """
+    log_start("verify_answer")
+
+    try:
+        # Extract original query from first message
+        if not state["messages"]:
+            logging.warning("[verify_answer] No messages in state")
+            result = {
+                "verification_status": "OK",
+                "replan_attempts": state.get("replan_attempts", 0),
+            }
+            log_end("verify_answer", status="OK", reason="no_messages")
+            return result
+
+        first_msg = state["messages"][0]
+        query = extract_message_content(first_msg)
+
+        # Extract final answer from last AIMessage
+        final_answer = None
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, AIMessage):
+                final_answer = extract_message_content(msg)
+                break
+
+        if not final_answer:
+            logging.warning("[verify_answer] No AIMessage found in state")
+            result = {
+                "verification_status": "OK",
+                "replan_attempts": state.get("replan_attempts", 0),
+            }
+            log_end("verify_answer", status="OK", reason="no_answer")
+            return result
+
+        # Judge the answer
+        judge_result = judge_answer(query, final_answer)
+        status = judge_result["status"]
+        reason = judge_result.get("reason")
+
+        # Update replan_attempts
+        current_attempts = state.get("replan_attempts", 0)
+        if status == "REPLAN":
+            new_attempts = current_attempts + 1
+            logging.info(
+                "[verify_answer] Answer incomplete, incrementing replan_attempts: %d -> %d",
+                current_attempts,
+                new_attempts,
+            )
+            if reason:
+                logging.info("[verify_answer] Replan reason: %s", reason)
+        else:
+            new_attempts = current_attempts
+            logging.info("[verify_answer] Answer verified as complete")
+
+        result = {
+            "verification_status": status,
+            "replan_attempts": new_attempts,
+            "verification_reason": reason,
+        }
+
+        log_end("verify_answer", status=status, attempts=new_attempts, reason=reason)
+        return result
+
+    except Exception as exc:
+        logging.error("[verify_answer] Verification failed: %s", exc, exc_info=True)
+        log_end("verify_answer", error=True)
+        # On error, default to OK to avoid infinite loops
+        return {
+            "verification_status": "OK",
+            "replan_attempts": state.get("replan_attempts", 0),
+        }
+
+
+def decide_verification_route(state: State) -> str:
+    """
+    Route decision function for verification results.
+
+    Returns:
+        "end" if verification passed or max replans reached
+        "planner" if verification failed and we should replan
+    """
+    status = state.get("verification_status")
+    attempts = state.get("replan_attempts", 0)
+
+    if status == "OK":
+        logging.info("[verify_answer] Routing to END (verification passed)")
+        return "end"
+
+    if status == "REPLAN":
+        if attempts >= config.MAX_REPLANS:
+            logging.warning(
+                "[verify_answer] Max replans (%d) reached, routing to END",
+                config.MAX_REPLANS,
+            )
+            return "end"
+        else:
+            reason = state.get("verification_reason")
+            logging.info(
+                "[verify_answer] Routing to planner (attempt %d/%d). Reason: %s",
+                attempts,
+                config.MAX_REPLANS,
+                reason[:100]
+                if reason and len(reason) > 100
+                else reason or "no reason provided",
+            )
+            return "planner"
+
+    # Default to end if status is None or unexpected
+    logging.warning("[verify_answer] Unexpected status %r, routing to END", status)
+    return "end"

@@ -8,3 +8,6 @@ RAG_CORPUS_NAME = os.getenv(
     "VERTEX_RAG_CORPUS_NAME",
     "projects/mlb-iris-production/locations/us-east4/ragCorpora/4611686018427387904",
 )
+
+# --- Verification Configuration ---
+MAX_REPLANS = 3  # Maximum number of replan attempts before giving up
