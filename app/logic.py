@@ -49,16 +49,26 @@ def find_player_id(player_name: str) -> int | None:
     return int(players[0]["id"])
 
 
-def fetch_player_stats(player_id: int) -> dict[str, Any] | None:
-    """
-    Fetch season statistics for a given player id.
-    Returns a dictionary (or None on failure).
-    """
+@lru_cache(maxsize=256)
+def _fetch_player_stats_cached(player_id: int) -> dict[str, Any] | None:
+    """Cached helper to retrieve season statistics for a player."""
     try:
         return get_player_stats(player_id)
     except Exception as exc:  # Defensive: keep node wrappers simple
         logging.warning("fetch_player_stats failed for %s: %s", player_id, exc)
         return None
+
+
+def fetch_player_stats(player_id: int | None) -> dict[str, Any] | None:
+    """
+    Fetch season statistics for a given player id.
+    Results are cached to avoid repeated MLB API calls during replans.
+    """
+
+    if player_id is None:
+        return None
+
+    return _fetch_player_stats_cached(int(player_id))
 
 
 def generate_player_stats_answer(query: str, stats: dict[str, Any] | None) -> str:
