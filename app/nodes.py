@@ -193,11 +193,62 @@ def player_search_node(state: State) -> dict:
         name = m.group(1) if m else q
     logging.info("[player_search] query=%r extracted_name=%r", q, name)
 
-    player_id = find_player_id(name)
-    logging.info("[player_search] chosen_id=%r", player_id)
-    out = {"player_id": int(player_id) if player_id is not None else None}
-    log_end("player_search", **out)
-    return out
+    # TESTING MODE: Always confirm player selection (even for single matches)
+    # Controlled by config.ALWAYS_CONFIRM_PLAYER flag
+    result = find_player_id(name, always_return_candidates=config.ALWAYS_CONFIRM_PLAYER)
+
+    if config.ALWAYS_CONFIRM_PLAYER and isinstance(result, list):
+        logging.info(
+            "[player_search] TESTING MODE: Always confirming player (single match wrapped)"
+        )
+
+    if isinstance(result, int):
+        # Single match - proceed normally
+        logging.info("[player_search] Single match found: player_id=%r", result)
+        out = {"player_id": result}
+        log_end("player_search", **out)
+        return out
+
+    elif isinstance(result, list):
+        # Multiple matches - interrupt for user selection
+        candidates = result
+        logging.info(
+            "[player_search] Multiple matches found: %d candidates", len(candidates)
+        )
+
+        # Import interrupt here to avoid circular imports
+        from langgraph.types import interrupt
+
+        # Format interrupt payload
+        interrupt_payload = {
+            "message": f"I found {len(candidates)} players named '{name}'. Please select one:",
+            "candidates": candidates,
+            "type": "player_selection",  # Custom type for our use case
+        }
+
+        # Interrupt and wait for user selection
+        selected_id = interrupt(interrupt_payload)
+
+        # Validate selected ID
+        valid_ids = [c["id"] for c in candidates]
+        if selected_id not in valid_ids:
+            logging.warning(
+                "[player_search] Invalid player_id %s selected, using first candidate",
+                selected_id,
+            )
+            selected_id = valid_ids[0]
+
+        logging.info("[player_search] Resume with selected_id=%r", selected_id)
+        out = {"player_id": int(selected_id)}
+        log_end("player_search", player_id=selected_id, interrupted=True)
+        return out
+
+    else:
+        # No matches
+        logging.info("[player_search] No matches found")
+        out = {"player_id": None}
+        log_end("player_search", **out)
+        return out
 
 
 def player_stats_node(state: State) -> dict:

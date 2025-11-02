@@ -88,20 +88,54 @@ class AgentEngineApp:
         *,
         input: str | Mapping,
         config: RunnableConfig | None = None,
+        resume_command: Any | None = None,
         **kwargs: Any,
     ) -> Iterable[Any]:
-        """Stream responses from the agent for a given input."""
+        """Stream responses from the agent, optionally resuming from interrupt."""
 
         config = ensure_valid_config(config)
         self.set_tracing_properties(config=config)
-        # Validate input. We assert the input is a list of messages
-        input_chat = InputChat.model_validate(input)
 
+        # If resuming from interrupt, use Command pattern
+        if resume_command is not None:
+            input_data = resume_command
+        else:
+            # Validate input. We assert the input is a list of messages
+            input_chat = InputChat.model_validate(input)
+            input_data = input_chat
+
+        # Stream chunks
         for chunk in self.runnable.stream(
-            input=input_chat, config=config, **kwargs, stream_mode="messages"
+            input=input_data, config=config, **kwargs, stream_mode="messages"
         ):
             dumped_chunk = dumpd(chunk)
             yield dumped_chunk
+
+        # After stream completes, check for interrupts (only on new queries, not resumes)
+        # Note: When an interrupt occurs, LangGraph pauses execution and stores state in checkpointer.
+        # The stream completes, but the final state (available via invoke) will contain __interrupt__.
+        # We call invoke here to get the final state - if interrupted, it returns immediately with __interrupt__,
+        # if completed, it may re-execute but should be fast due to caching.
+        if resume_command is None:
+            thread_id = config.get("configurable", {}).get("thread_id")
+            if thread_id:
+                try:
+                    # Get final state - will return immediately if interrupted, or execute if not
+                    final_state = self.runnable.invoke(
+                        input=input_data, config=config, **kwargs
+                    )
+                    if "__interrupt__" in final_state:
+                        interrupt_data = final_state["__interrupt__"]
+                        yield {
+                            "type": "interrupt",
+                            "data": interrupt_data,
+                            "thread_id": thread_id,
+                        }
+                except Exception as e:
+                    # If checking for interrupts fails, log but don't fail the stream
+                    import logging
+
+                    logging.warning(f"Failed to check for interrupts: {e}")
 
     def query(
         self,

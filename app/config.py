@@ -11,3 +11,8 @@ RAG_CORPUS_NAME = os.getenv(
 
 # --- Verification Configuration ---
 MAX_REPLANS = 3  # Maximum number of replan attempts before giving up
+
+# --- Interrupt Testing Configuration ---
+# When True, always trigger player confirmation interrupt (even for single matches)
+# Useful for testing interrupt flow. Set to False for production behavior.
+ALWAYS_CONFIRM_PLAYER = os.getenv("ALWAYS_CONFIRM_PLAYER", "false").lower() == "true"

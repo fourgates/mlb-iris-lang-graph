@@ -20,14 +20,21 @@ from app.utils.mlb_tools import get_player_stats, search_player
 from .services import grounding_tool, llm_langchain, llm_native_grounding
 
 
-def find_player_id(player_name: str) -> int | None:
+def find_player_id(
+    player_name: str, always_return_candidates: bool = False
+) -> int | list[dict[str, Any]] | None:
     """
-    Search for a player by name and choose the best match.
+    Search for a player by name and choose the best match or return candidates if ambiguous.
 
     Selection heuristic:
-    - Exact case-insensitive full-name match
-    - Partial substring match
-    - First result as fallback
+    - Exact case-insensitive full-name match (single → return ID, multiple → return list)
+    - Partial substring match (single → return ID, multiple → return list)
+    - First result as fallback (unambiguous)
+
+    Returns:
+        int: Single player ID if unambiguous match found
+        list[dict]: List of candidate dicts with 'id', 'name', 'team' if ambiguous
+        None: No matches found
     """
     result = search_player(player_name, only_active=True)
     players = result.get("players", []) if isinstance(result, dict) else []
@@ -35,17 +42,72 @@ def find_player_id(player_name: str) -> int | None:
         return None
 
     target = player_name.lower().strip()
-    # Exact match
-    for p in players:
-        if str(p.get("full_name", "")).lower().strip() == target:
-            return int(p["id"])
 
-    # Partial match
-    for p in players:
-        if target in str(p.get("full_name", "")).lower():
-            return int(p["id"])
+    # Find exact matches
+    exact_matches = [
+        p for p in players if str(p.get("full_name", "")).lower().strip() == target
+    ]
 
-    # Fallback
+    # If multiple exact matches, return them as candidates
+    if len(exact_matches) >= 2:
+        return [
+            {
+                "id": int(p["id"]),
+                "name": p.get("full_name", "Unknown"),
+                "team": p.get("team", "Unknown Team"),
+            }
+            for p in exact_matches
+        ]
+
+    # If single exact match, return that ID (or list if always_return_candidates)
+    if len(exact_matches) == 1:
+        if always_return_candidates:
+            return [
+                {
+                    "id": int(exact_matches[0]["id"]),
+                    "name": exact_matches[0].get("full_name", "Unknown"),
+                    "team": exact_matches[0].get("team", "Unknown Team"),
+                }
+            ]
+        return int(exact_matches[0]["id"])
+
+    # Find partial matches
+    partial_matches = [
+        p for p in players if target in str(p.get("full_name", "")).lower()
+    ]
+
+    # If multiple partial matches, return them as candidates
+    if len(partial_matches) >= 2:
+        return [
+            {
+                "id": int(p["id"]),
+                "name": p.get("full_name", "Unknown"),
+                "team": p.get("team", "Unknown Team"),
+            }
+            for p in partial_matches
+        ]
+
+    # If single partial match, return that ID (or list if always_return_candidates)
+    if len(partial_matches) == 1:
+        if always_return_candidates:
+            return [
+                {
+                    "id": int(partial_matches[0]["id"]),
+                    "name": partial_matches[0].get("full_name", "Unknown"),
+                    "team": partial_matches[0].get("team", "Unknown Team"),
+                }
+            ]
+        return int(partial_matches[0]["id"])
+
+    # Fallback: use first result (unambiguous)
+    if always_return_candidates:
+        return [
+            {
+                "id": int(players[0]["id"]),
+                "name": players[0].get("full_name", "Unknown"),
+                "team": players[0].get("team", "Unknown Team"),
+            }
+        ]
     return int(players[0]["id"])
 
 
