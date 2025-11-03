@@ -55,3 +55,13 @@ lint:
 	uv run ruff check . --diff
 	uv run ruff format . --check --diff
 	uv run mypy .
+
+# Visualize the LangGraph structure
+visualize:
+	@echo "==============================================================================="
+	@echo "| 📊 Generating graph visualization...                                        |"
+	@echo "==============================================================================="
+	uv run python visualize_graph.py
+	@echo ""
+	@echo "✅ Graph visualization saved to: graph_visualization.png"
+	@echo "📝 Mermaid syntax printed above (can be used in docs/Markdown)"
