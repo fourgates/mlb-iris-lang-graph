@@ -111,31 +111,70 @@ class AgentEngineApp:
             dumped_chunk = dumpd(chunk)
             yield dumped_chunk
 
-        # After stream completes, check for interrupts (only on new queries, not resumes)
-        # Note: When an interrupt occurs, LangGraph pauses execution and stores state in checkpointer.
-        # The stream completes, but the final state (available via invoke) will contain __interrupt__.
-        # We call invoke here to get the final state - if interrupted, it returns immediately with __interrupt__,
-        # if completed, it may re-execute but should be fast due to caching.
-        if resume_command is None:
-            thread_id = config.get("configurable", {}).get("thread_id")
-            if thread_id:
-                try:
-                    # Get final state - will return immediately if interrupted, or execute if not
+        # After stream completes:
+        # 1. For new queries: Check for interrupts
+        # 2. For resumes: Get final state to extract the answer (stream may not yield messages)
+        thread_id = config.get("configurable", {}).get("thread_id")
+        if thread_id:
+            try:
+                if resume_command is None:
+                    # New query - check for interrupts
+                    logging.info(
+                        "[AgentEngineApp] Checking for interrupts after stream completion (thread_id=%s)",
+                        thread_id,
+                    )
                     final_state = self.runnable.invoke(
                         input=input_data, config=config, **kwargs
                     )
                     if "__interrupt__" in final_state:
                         interrupt_data = final_state["__interrupt__"]
+                        logging.info(
+                            "[AgentEngineApp] Interrupt detected! thread_id=%s, interrupt_data=%s",
+                            thread_id,
+                            interrupt_data,
+                        )
                         yield {
                             "type": "interrupt",
                             "data": interrupt_data,
                             "thread_id": thread_id,
                         }
-                except Exception as e:
-                    # If checking for interrupts fails, log but don't fail the stream
-                    import logging
+                    else:
+                        logging.info(
+                            "[AgentEngineApp] No interrupt detected (graph completed normally)"
+                        )
+                else:
+                    # Resume - get final state to extract answer
+                    logging.info(
+                        "[AgentEngineApp] Resume completed, getting final state for answer (thread_id=%s)",
+                        thread_id,
+                    )
+                    final_state = self.runnable.invoke(
+                        input=input_data, config=config, **kwargs
+                    )
+                    # Extract the last AI message from state
+                    messages = final_state.get("messages", [])
+                    if messages:
+                        # Find the last AIMessage
+                        from langchain_core.messages import AIMessage
 
-                    logging.warning(f"Failed to check for interrupts: {e}")
+                        for msg in reversed(messages):
+                            if isinstance(msg, AIMessage) and msg.content:
+                                logging.info(
+                                    "[AgentEngineApp] Extracting final answer from state: %s",
+                                    msg.content[:100]
+                                    if len(msg.content) > 100
+                                    else msg.content,
+                                )
+                                # Yield as a message chunk so EventProcessor can handle it
+                                yield dumpd(msg)
+                                break
+                    else:
+                        logging.warning(
+                            "[AgentEngineApp] Resume completed but no messages in final state"
+                        )
+            except Exception as e:
+                # If checking final state fails, log but don't fail the stream
+                logging.warning(f"[AgentEngineApp] Failed to get final state: {e}")
 
     def query(
         self,

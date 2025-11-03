@@ -21,6 +21,7 @@ from typing import Any
 
 import streamlit as st
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 from streamlit_feedback import streamlit_feedback
 
 from frontend.side_bar import SideBar
@@ -159,6 +160,13 @@ def display_tool_output(
 
 def handle_user_input(side_bar: SideBar) -> None:
     """Process user input, generate AI response, and update chat history."""
+    # Disable user input if there's a pending interrupt
+    if "pending_interrupt" in st.session_state:
+        st.chat_input(
+            disabled=True, placeholder="Please select a player above to continue..."
+        )
+        return
+
     prompt = st.chat_input() or st.session_state.modified_prompt
     if prompt:
         st.session_state.modified_prompt = None
@@ -229,6 +237,136 @@ def update_chat_title() -> None:
     )
 
 
+def display_interrupt_selection(side_bar: SideBar) -> bool:
+    """
+    Display interrupt UI and handle user selection.
+
+    Returns:
+        bool: True if interrupt was handled (selection made), False otherwise
+    """
+    if "pending_interrupt" not in st.session_state:
+        return False
+
+    interrupt_data = st.session_state.pending_interrupt
+
+    # Extract interrupt payload (LangGraph wraps it in Interrupt objects)
+    interrupt_payload = None
+    if isinstance(interrupt_data, list) and len(interrupt_data) > 0:
+        # Handle Interrupt object (has .value attribute)
+        first_interrupt = interrupt_data[0]
+        if hasattr(first_interrupt, "value"):
+            interrupt_payload = first_interrupt.value
+        elif isinstance(first_interrupt, dict) and "value" in first_interrupt:
+            interrupt_payload = first_interrupt["value"]
+        else:
+            interrupt_payload = first_interrupt
+    elif isinstance(interrupt_data, dict):
+        interrupt_payload = interrupt_data
+
+    if not interrupt_payload:
+        st.error("Invalid interrupt data format")
+        # Clear invalid interrupt state
+        if "pending_interrupt" in st.session_state:
+            del st.session_state.pending_interrupt
+        if "interrupt_thread_id" in st.session_state:
+            del st.session_state.interrupt_thread_id
+        return False
+
+    # Check if this is a player selection interrupt
+    if interrupt_payload.get("type") != "player_selection":
+        st.warning(f"Unknown interrupt type: {interrupt_payload.get('type')}")
+        return False
+
+    candidates = interrupt_payload.get("candidates", [])
+    if not candidates:
+        st.error("No candidates found in interrupt")
+        return False
+
+    # Display interrupt message
+    st.info(f"🔍 {interrupt_payload.get('message', 'Multiple matches found')}")
+
+    # Display candidates as buttons
+    st.markdown("**Please select a player:**")
+
+    # Create columns for buttons (max 3 per row)
+    cols_per_row = 3
+    num_rows = (len(candidates) + cols_per_row - 1) // cols_per_row
+
+    selected_index = None
+    for row in range(num_rows):
+        cols = st.columns(cols_per_row)
+        for col_idx, col in enumerate(cols):
+            candidate_idx = row * cols_per_row + col_idx
+            if candidate_idx >= len(candidates):
+                break
+
+            candidate = candidates[candidate_idx]
+            label = f"{candidate['name']}\n({candidate.get('team', 'Unknown Team')})"
+
+            with col:
+                if st.button(label, key=f"interrupt_btn_{candidate_idx}"):
+                    selected_index = candidate_idx
+
+    # Handle selection
+    if selected_index is not None:
+        selected_id = candidates[selected_index]["id"]
+        resume_interrupt(selected_id, side_bar)
+        return True
+
+    # Cancel button
+    if st.button("Cancel", key="interrupt_cancel"):
+        # Clear interrupt state, add error message
+        if "pending_interrupt" in st.session_state:
+            del st.session_state.pending_interrupt
+        if "interrupt_thread_id" in st.session_state:
+            del st.session_state.interrupt_thread_id
+        st.session_state.user_chats[st.session_state["session_id"]]["messages"].append(
+            {
+                "type": "ai",
+                "content": "Player selection cancelled. Please try again with a more specific query.",
+            }
+        )
+        st.rerun()
+
+    return False  # Still waiting for selection
+
+
+def resume_interrupt(selected_player_id: int, side_bar: SideBar) -> None:
+    """Resume graph execution with selected player ID."""
+    thread_id = st.session_state.get("interrupt_thread_id")
+    if not thread_id:
+        st.error("Missing thread_id for interrupt resume")
+        return
+
+    # Create resume command
+    resume_command: Command = Command[tuple[()]](resume=selected_player_id)
+
+    # Clear interrupt state BEFORE resuming (prevent loops)
+    if "pending_interrupt" in st.session_state:
+        del st.session_state.pending_interrupt
+    if "interrupt_thread_id" in st.session_state:
+        del st.session_state.interrupt_thread_id
+
+    # Display loading state and resume execution
+    # Note: Don't use spinner context for rerun - it can cause display issues
+    stream_handler = StreamHandler(st=st)
+    client = Client(
+        remote_agent_engine_id=side_bar.remote_agent_engine_id,
+        agent_callable_path=side_bar.agent_callable_path,
+        url=side_bar.url_input_field,
+        authenticate_request=side_bar.should_authenticate_request,
+    )
+    get_chain_response(
+        st=st,
+        client=client,
+        stream_handler=stream_handler,
+        resume_command=resume_command,
+    )
+
+    # Rerun to display the updated chat history
+    st.rerun()
+
+
 def display_feedback(side_bar: SideBar) -> None:
     """Display a feedback component and log the feedback if provided."""
     if st.session_state.run_id is not None:
@@ -257,6 +395,12 @@ def main() -> None:
     side_bar = SideBar(st=st)
     side_bar.init_side_bar()
     display_messages()
+
+    # Check for and display interrupt selection UI FIRST (before normal input)
+    if display_interrupt_selection(side_bar):
+        # Interrupt was handled (user made selection), rerun to show updated state
+        return
+
     handle_user_input(side_bar=side_bar)
     display_feedback(side_bar=side_bar)
 

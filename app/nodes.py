@@ -458,17 +458,50 @@ def verify_answer_node(state: State) -> dict:
             return result
 
         query: str | None = None
+        # Log message types for debugging
+        message_types = [type(msg).__name__ for msg in state["messages"]]
+        logging.debug("[verify_answer] Message types in state: %s", message_types)
+
+        # First, try to find the most recent HumanMessage (user's latest query)
         for msg in reversed(state["messages"]):
             if isinstance(msg, HumanMessage):
                 query = extract_message_content(msg)
+                logging.info(
+                    "[verify_answer] Found HumanMessage (reverse search): %s",
+                    query[:100] if len(query) > 100 else query,
+                )
                 break
 
+        # If no HumanMessage found, search from the beginning (original query)
         if query is None:
             logging.warning(
-                "[verify_answer] No HumanMessage found in state; defaulting to first message"
+                "[verify_answer] No HumanMessage found in reverse order; searching from start"
             )
-            first_msg = state["messages"][0]
-            query = extract_message_content(first_msg)
+            for msg in state["messages"]:
+                if isinstance(msg, HumanMessage):
+                    query = extract_message_content(msg)
+                    logging.info(
+                        "[verify_answer] Found HumanMessage (forward search): %s",
+                        query[:100] if len(query) > 100 else query,
+                    )
+                    break
+
+        # Last resort: use first message if it has content (but log warning)
+        if query is None:
+            logging.warning(
+                "[verify_answer] No HumanMessage found in state; using first message as fallback"
+            )
+            if state["messages"]:
+                first_msg = state["messages"][0]
+                query = extract_message_content(first_msg)
+                # Validate it's not an AIMessage (which would be wrong)
+                if isinstance(first_msg, AIMessage):
+                    logging.error(
+                        "[verify_answer] First message is AIMessage, not HumanMessage! "
+                        "This will cause incorrect verification."
+                    )
+            else:
+                query = "Unknown query"
 
         # Extract final answer from last AIMessage
         final_answer = None

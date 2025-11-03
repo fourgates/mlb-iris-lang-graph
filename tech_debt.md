@@ -122,3 +122,89 @@ Single-domain paths (`PLAYER_STATS` and `DOCUMENT_QA`) only examine the most rec
 - Addressing these will reduce reliance on the planner agent for common queries
 - Consider batching these improvements together to minimize refactoring overhead
 
+### 3. Interrupt Infrastructure Refinements (NEW)
+
+**Status:** 🟠 Medium Priority  
+**Impact:** Medium  
+**Cost:** Low-Medium (1–2 days)
+
+| Sub-Issue | Problem | Proposed Solution | Benefit |
+|-----------|---------|-------------------|---------|
+| EventProcessor coupling | `EventProcessor` currently mixes streaming, tool-call rendering, and interrupt logic, making future maintenance harder | Extract an `InterruptHandler` (or `StreamEventRouter`) class responsible only for interrupt detection & dispatch | Cleaner separation of concerns; easier to extend & unit-test |
+| Hard-coded player selection UI | ********`display_interrupt_selection`******** only handles `player_selection` with ad-hoc button rendering | Introduce an **Interrupt Renderer Registry**: `INTERRUPT_RENDERERS = {"player_selection": render_player_selection, "tool_approval": render_tool_approval, ...}`.  UI dispatches to the appropriate renderer based on `payload["type"]`. Provide a **generic `render_choice_list`** helper reusable across interrupt types. | Supports additional interrupt kinds (e.g. tool approval, multi-turn clarification) with minimal changes |
+| Duplicate interrupt checks in backend | `AgentEngineApp.stream_query` contains two separate paths for interrupt detection & final answer extraction | Refactor: always call `final_state = self.runnable.invoke(...)` once after streaming; branch on `"__interrupt__" in final_state` | Simpler logic, one code path to test |
+
+---
+
+### 4. Integration Tests for Interrupt Flow (NEW)
+
+**Status:** 🟡 Medium Priority  
+**Impact:** Medium  
+**Cost:** Medium (1–2 days)
+
+Add an **end-to-end integration test** that:
+1. Launches the local agent & Streamlit UI headlessly (Streamlit `testing` module or Playwright)
+2. Sends a query that triggers a `player_selection` interrupt
+3. Simulates clicking a candidate button
+4. Asserts that the final AI message appears in chat history and `pending_interrupt` state is cleared.
+
+Provides confidence that regressions in interrupt handling or resume logic are caught automatically.
+
+#### Verification Loop Side-Effect  
+*Because the verification node tries to rediscover the user’s query by scanning `state["messages"]`, interruption/resume and follow-up turns can reorder messages so that the first/last element is an `AIMessage`.  When no `HumanMessage` is found the node falls back to the wrong content (often the previous answer), so the LLM-judge is evaluating **answer vs. answer** and returns `OK` even if the user question was never addressed.*
+
+**Fix comes “for free” once multi-turn context is implemented:**  whichever option we pick (A/B/C) should guarantee that the latest user utterance can be reliably accessed (e.g. `state["last_user_query"]`).  Verification node will then read that field directly instead of searching the message list, eliminating this bug.
+
+
+#### Regression Test Scenario (to add once multi-turn context is implemented)
+
+```
+# test_multi_turn_verification.py
+from app.agent_engine_app import AgentEngineApp
+from langgraph.types import Command
+
+app = AgentEngineApp(...  # local runnable)
+thread_id = "test-thread"
+
+# 1️⃣ initial query -> should answer batting average
+steps = app.runnable.invoke(
+    input={"messages": [{"role": "user", "content": "What is Aaron Judge's batting average?"}]},
+    config={"configurable": {"thread_id": thread_id}},
+)
+assert "AVG" in steps["messages"][-1].content
+
+# 2️⃣ follow-up query referring to same player
+steps = app.runnable.invoke(
+    input={"messages": [{"role": "user", "content": "How about home runs?"}]},
+    config={"configurable": {"thread_id": thread_id}},
+)
+# ensure no interrupt is triggered (should reuse context)
+assert "__interrupt__" not in steps
+# ensure answer mentions a numeric home-run total
+assert any(word.isdigit() for word in steps["messages"][-1].content.split())
+```
+
+This test fails today (home-run question loses context) and should pass once multi-turn routing + verification fixes are delivered.
+
+
+### 5. Parallel Interrupt Handling (Optional / Future)  
+
+**Status:** 🟣 Low Priority  
+**Impact:** Low (quality-of-life)  
+**Cost:** Low-Medium (≤1 day)
+
+| Problem | Proposed Solution | Benefit |
+|---------|-------------------|---------|
+| Current UI/backend assume **one** pending interrupt per conversation.  If a second interrupt fires before the first is resolved it simply overwrites the previous payload. | Migrate to<br>`st.session_state.pending_interrupts: dict[str, list[Interrupt]]` keyed by `thread_id`.  UI pops from the list and can show a queue/stack of actions.  Backend logic unchanged (still emits `{type:"interrupt"}` events). | Enables nested/workflow-style approvals (e.g. player selection **and** tool approval) without dropping earlier requests.
+
+This enhancement can be tackled after the primary interrupt UX is solid and multi-turn context is complete.
+
+
+> **Note on parallel interrupts**  
+> Today the UI assumes **one pending interrupt per conversation** (`pending_interrupt`, `interrupt_thread_id`).  If we later support multiple concurrent actions (e.g., nested tool approvals while a player selection is still open) we can migrate to a structure like:
+>
+> ```python
+> st.session_state.pending_interrupts: dict[str, list[Interrupt]]  # keyed by thread_id
+> ```
+>
+> The interrupt renderer would pop from the queue and the UI could surface a stack/queue of actions.  Not required for the current MVP, but documented so the next refactor considers it.

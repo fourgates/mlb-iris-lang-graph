@@ -8,7 +8,7 @@ install:
 	uv sync --dev --extra streamlit
 
 # ==============================================================================
-# Playground Targets
+# can ground Targets
 # ==============================================================================
 
 # Launch local dev playground
@@ -17,8 +17,9 @@ playground:
 	@echo "| 🚀 Starting your agent playground...                                        |"
 	@echo "|                                                                             |"
 	@echo "| 💡 Try asking: What's the weather in San Francisco?                         |"
+	@echo "| 🧪 ALWAYS_CONFIRM_PLAYER is enabled for interrupt testing                   |"
 	@echo "==============================================================================="
-	PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python -m streamlit run frontend/streamlit_app.py --browser.serverAddress=localhost --server.enableCORS=false --server.enableXsrfProtection=false --logger.level=info
+	PYTHONUNBUFFERED=1 PYTHONPATH=. ALWAYS_CONFIRM_PLAYER=true uv run python -m streamlit run frontend/streamlit_app.py --browser.serverAddress=localhost --server.enableCORS=false --server.enableXsrfProtection=false --logger.level=info
 
 # ==============================================================================
 # Backend Deployment Targets

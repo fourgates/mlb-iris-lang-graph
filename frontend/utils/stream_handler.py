@@ -15,6 +15,7 @@
 # mypy: disable-error-code="unreachable"
 import importlib
 import json
+import logging
 import uuid
 from collections.abc import Generator
 from typing import Any
@@ -151,7 +152,14 @@ class Client:
         self, data: dict[str, Any]
     ) -> Generator[dict[str, Any], None, None]:
         """Stream events from the server, yielding parsed event data."""
+        # Extract resume_command if present (for resuming from interrupt)
+        resume_command = data.pop("resume_command", None)
+
         if self.url:
+            # Remote URL - add resume_command to request if present
+            request_data = {**data}
+            if resume_command:
+                request_data["resume_command"] = resume_command
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream",
@@ -159,7 +167,7 @@ class Client:
             if self.authenticate_request:
                 headers["Authorization"] = f"Bearer {self.id_token}"
             with requests.post(
-                self.url, json=data, headers=headers, stream=True, timeout=60
+                self.url, json=request_data, headers=headers, stream=True, timeout=60
             ) as response:
                 for line in response.iter_lines():
                     if line:
@@ -169,7 +177,11 @@ class Client:
                         except json.JSONDecodeError:
                             print(f"Failed to parse event: {line.decode('utf-8')}")
         elif self.agent is not None:
-            yield from self.agent.stream_query(**data)
+            # Local agent - pass resume_command to stream_query
+            yield from self.agent.stream_query(
+                **data,
+                resume_command=resume_command,
+            )
 
 
 class StreamHandler:
@@ -206,30 +218,80 @@ class EventProcessor:
         self.tool_calls: list[dict[str, Any]] = []
         self.current_run_id: str | None = None
         self.additional_kwargs: dict[str, Any] = {}
+        self.interrupt_data: dict[str, Any] | None = None
+        self.interrupt_thread_id: str | None = None
 
-    def process_events(self) -> None:
-        """Process events from the stream, handling each event type appropriately."""
+    def process_events(self, resume_command: Any | None = None) -> None:
+        """Process events from the stream, handling interrupts and resume commands."""
         messages = self.st.session_state.user_chats[
             self.st.session_state["session_id"]
         ]["messages"]
         self.current_run_id = str(uuid.uuid4())
         # Set run_id in session state at start of processing
         self.st.session_state["run_id"] = self.current_run_id
+
+        # Reset final_content for resume (important!)
+        self.final_content = ""
+        self.tool_calls = []
+
+        # Get thread_id (use session_id as thread_id for persistence)
+        thread_id = (
+            self.st.session_state.get("thread_id")
+            or self.st.session_state["session_id"]
+        )
+        if "thread_id" not in self.st.session_state:
+            self.st.session_state["thread_id"] = thread_id
+
         stream = self.client.stream_messages(
             data={
                 "input": {"messages": messages},
                 "config": {
+                    "configurable": {
+                        "thread_id": thread_id
+                    },  # NEW: thread_id for checkpointer
                     "run_id": self.current_run_id,
                     "metadata": {
                         "user_id": self.st.session_state["user_id"],
                         "session_id": self.st.session_state["session_id"],
                     },
                 },
+                "resume_command": resume_command,  # NEW: for resuming from interrupt
             }
         )
-        # Each event is a tuple message, metadata. https://langchain-ai.github.io/langgraph/how-tos/streaming/#messages
-        for message, _ in stream:
+        # Process stream events - handle interrupts before normal messages
+        logging.info(
+            "[EventProcessor] Starting event processing (resume_command=%s)",
+            resume_command is not None,
+        )
+        message_count = 0
+        for message in stream:
+            message_count += 1
+            # Handle tuple format (message, metadata) from LangGraph streaming
+            if isinstance(message, tuple):
+                message_item, _ = message
+                message = message_item
+
             if isinstance(message, dict):
+                logging.debug(
+                    "[EventProcessor] Processing message #%d: type=%s, keys=%s",
+                    message_count,
+                    message.get("type"),
+                    list(message.keys())[:5],  # First 5 keys for debugging
+                )
+                # Check for interrupt event FIRST (before other message processing)
+                if message.get("type") == "interrupt":
+                    self.interrupt_data = message.get("data")
+                    self.interrupt_thread_id = message.get("thread_id")
+                    # Store interrupt data directly (it's already the list of Interrupt objects)
+                    self.st.session_state.pending_interrupt = self.interrupt_data
+                    self.st.session_state.interrupt_thread_id = self.interrupt_thread_id
+                    logging.info(
+                        "[EventProcessor] Interrupt detected: thread_id=%s, data=%s",
+                        self.interrupt_thread_id,
+                        self.interrupt_data,
+                    )
+                    return  # Stop processing, wait for user input
+
                 if message.get("type") == "constructor":
                     message = message["kwargs"]
 
@@ -267,7 +329,7 @@ class EventProcessor:
                     elif message.get("content") and message.get("type") == "ai":
                         self.final_content = message.get("content")
 
-        # Handle end of stream
+        # Handle end of stream - only if no interrupt was detected
         if self.final_content:
             final_message = AIMessage(
                 content=self.final_content,
@@ -280,9 +342,25 @@ class EventProcessor:
             )
             self.st.session_state.user_chats[session]["messages"].append(final_message)
             self.st.session_state.run_id = self.current_run_id
+            logging.info(
+                "[EventProcessor] Added final message to chat history: content=%s",
+                self.final_content[:100]
+                if len(self.final_content) > 100
+                else self.final_content,
+            )
+        else:
+            logging.warning(
+                "[EventProcessor] Stream completed but no final_content to add (resume_command=%s)",
+                resume_command is not None,
+            )
 
 
-def get_chain_response(st: Any, client: Client, stream_handler: StreamHandler) -> None:
+def get_chain_response(
+    st: Any,
+    client: Client,
+    stream_handler: StreamHandler,
+    resume_command: Any | None = None,
+) -> None:
     """Process the chain response update the Streamlit UI.
 
     This function initiates the event processing for a chain of operations,
@@ -297,6 +375,8 @@ def get_chain_response(st: Any, client: Client, stream_handler: StreamHandler) -
         stream_handler (StreamHandler): An instance of the StreamHandler class
                                       used to update the Streamlit UI with
                                       streaming content.
+        resume_command (Any | None): Optional Command(resume=...) for resuming
+                                     from interrupt. Defaults to None.
 
     Returns:
         None
@@ -305,6 +385,7 @@ def get_chain_response(st: Any, client: Client, stream_handler: StreamHandler) -
         - Updates the Streamlit UI with streaming tokens and tool call information.
         - Modifies the session state to include the final AI message and run ID.
         - Handles various events like chain starts/ends, tool calls, and model outputs.
+        - Detects interrupts and stores them in session state.
     """
     processor = EventProcessor(st, client, stream_handler)
-    processor.process_events()
+    processor.process_events(resume_command=resume_command)
