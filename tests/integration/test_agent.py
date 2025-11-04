@@ -21,6 +21,9 @@ def test_agent_stream() -> None:
     Integration test for the agent stream functionality.
     Tests that the agent returns valid streaming responses.
     """
+    import uuid
+    from langchain_core.runnables import RunnableConfig
+
     input_dict = {
         "messages": [
             {"type": "human", "content": "Hi"},
@@ -29,8 +32,13 @@ def test_agent_stream() -> None:
         ]
     }
 
+    config: RunnableConfig = {
+        "configurable": {"thread_id": str(uuid.uuid4())}
+    }
+
     events = [
-        message for message, _ in agent.stream(input_dict, stream_mode="messages")
+        message
+        for message, _ in agent.stream(input_dict, config=config, stream_mode="messages")
     ]
 
     # Verify we get a reasonable number of messages

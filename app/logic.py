@@ -1,0 +1,249 @@
+"""
+Core business logic for MLB assistant, decoupled from LangGraph node wrappers.
+
+These functions are pure (or side-effect limited to service calls) and can be
+reused by subgraphs or agent tools.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime
+from functools import lru_cache
+from typing import Any
+
+from google.api_core.exceptions import ResourceExhausted
+from vertexai import rag
+
+from app.utils.mlb_tools import get_player_stats, search_player
+
+from .services import grounding_tool, llm_langchain, llm_native_grounding
+
+
+def find_player_id(
+    player_name: str, always_return_candidates: bool = False
+) -> int | list[dict[str, Any]] | None:
+    """
+    Search for a player by name and choose the best match or return candidates if ambiguous.
+
+    Selection heuristic:
+    - Exact case-insensitive full-name match (single → return ID, multiple → return list)
+    - Partial substring match (single → return ID, multiple → return list)
+    - First result as fallback (unambiguous)
+
+    Returns:
+        int: Single player ID if unambiguous match found
+        list[dict]: List of candidate dicts with 'id', 'name', 'team' if ambiguous
+        None: No matches found
+    """
+    result = search_player(player_name, only_active=True)
+    players = result.get("players", []) if isinstance(result, dict) else []
+    if not players:
+        return None
+
+    target = player_name.lower().strip()
+
+    # Find exact matches
+    exact_matches = [
+        p for p in players if str(p.get("full_name", "")).lower().strip() == target
+    ]
+
+    # If multiple exact matches, return them as candidates
+    if len(exact_matches) >= 2:
+        return [
+            {
+                "id": int(p["id"]),
+                "name": p.get("full_name", "Unknown"),
+                "team": p.get("team", "Unknown Team"),
+            }
+            for p in exact_matches
+        ]
+
+    # If single exact match, return that ID (or list if always_return_candidates)
+    if len(exact_matches) == 1:
+        if always_return_candidates:
+            return [
+                {
+                    "id": int(exact_matches[0]["id"]),
+                    "name": exact_matches[0].get("full_name", "Unknown"),
+                    "team": exact_matches[0].get("team", "Unknown Team"),
+                }
+            ]
+        return int(exact_matches[0]["id"])
+
+    # Find partial matches
+    partial_matches = [
+        p for p in players if target in str(p.get("full_name", "")).lower()
+    ]
+
+    # If multiple partial matches, return them as candidates
+    if len(partial_matches) >= 2:
+        return [
+            {
+                "id": int(p["id"]),
+                "name": p.get("full_name", "Unknown"),
+                "team": p.get("team", "Unknown Team"),
+            }
+            for p in partial_matches
+        ]
+
+    # If single partial match, return that ID (or list if always_return_candidates)
+    if len(partial_matches) == 1:
+        if always_return_candidates:
+            return [
+                {
+                    "id": int(partial_matches[0]["id"]),
+                    "name": partial_matches[0].get("full_name", "Unknown"),
+                    "team": partial_matches[0].get("team", "Unknown Team"),
+                }
+            ]
+        return int(partial_matches[0]["id"])
+
+    # Fallback: use first result (unambiguous)
+    if always_return_candidates:
+        return [
+            {
+                "id": int(players[0]["id"]),
+                "name": players[0].get("full_name", "Unknown"),
+                "team": players[0].get("team", "Unknown Team"),
+            }
+        ]
+    return int(players[0]["id"])
+
+
+@lru_cache(maxsize=256)
+def _fetch_player_stats_cached(player_id: int) -> dict[str, Any] | None:
+    """Cached helper to retrieve season statistics for a player."""
+    try:
+        return get_player_stats(player_id)
+    except Exception as exc:  # Defensive: keep node wrappers simple
+        logging.warning("fetch_player_stats failed for %s: %s", player_id, exc)
+        return None
+
+
+def fetch_player_stats(player_id: int | None) -> dict[str, Any] | None:
+    """
+    Fetch season statistics for a given player id.
+    Results are cached to avoid repeated MLB API calls during replans.
+    """
+
+    if player_id is None:
+        return None
+
+    return _fetch_player_stats_cached(int(player_id))
+
+
+def generate_player_stats_answer(query: str, stats: dict[str, Any] | None) -> str:
+    """
+    Construct a concise answer using provided hitting stats as context.
+    Falls back to answering the query directly if no stats are provided.
+    """
+    hitting = (
+        (stats or {}).get("stats", {}).get("hitting_season", {})
+        if isinstance(stats, dict)
+        else {}
+    )
+
+    if hitting:
+        season = hitting.get("season", datetime.now().year)
+        prompt = (
+            "You are an expert MLB analyst. Here is the player's hitting statistics "
+            f"for the {season} season:\n"
+            f"Batting Average (AVG): {hitting.get('avg', '.000')}\n"
+            f"Home Runs (HR): {hitting.get('home_runs', 0)}\n"
+            f"OPS: {hitting.get('ops', '.000')}\n"
+            f"RBI: {hitting.get('rbi', 0)}\n"
+            f"Hits: {hitting.get('hits', 0)}\n"
+            f"At Bats: {hitting.get('at_bats', 0)}\n\n"
+            "IMPORTANT: Answer the user's question directly and completely. "
+            "If they ask about a specific statistic, provide that statistic with its season context. "
+            "Be concise but include the season year in your answer.\n\n"
+            f"Question: {query}\nAnswer:"
+        )
+    else:
+        prompt = query
+
+    response = llm_langchain.invoke(prompt)
+    content = (
+        response.content if isinstance(response.content, str) else str(response.content)
+    )
+    return content
+
+
+@lru_cache(maxsize=128)
+def _generate_grounded_answer_cached(query: str) -> str:
+    """Internal cached implementation for grounded answers."""
+    max_retries = 3
+    base_delay = 5  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            response = llm_native_grounding.generate_content(
+                query, tools=[grounding_tool]
+            )
+
+            if not response.candidates:
+                return (
+                    response.text or "I could not find any information on that topic."
+                )
+
+            candidate = response.candidates[0]
+
+            if not getattr(candidate, "grounding_metadata", None):
+                return (
+                    response.text or "I could not find any information on that topic."
+                )
+
+            grounding_supports = list(candidate.grounding_metadata.grounding_supports)
+            grounding_chunks = list(candidate.grounding_metadata.grounding_chunks)
+            if not grounding_supports:
+                return (
+                    response.text or "I could not find any information on that topic."
+                )
+
+            if not getattr(candidate, "content", None) or not getattr(
+                candidate.content, "parts", None
+            ):
+                return (
+                    response.text or "I could not find any information on that topic."
+                )
+
+            rag_response = rag.add_inline_citations_and_references(
+                original_text_str=candidate.content.parts[0].text,
+                grounding_supports=grounding_supports,
+                grounding_chunks=grounding_chunks,
+            )
+
+            final_content = rag_response.cited_text
+            if rag_response.final_bibliography:
+                final_content += "\n\n**Sources:**\n" + rag_response.final_bibliography
+            return final_content
+
+        except ResourceExhausted:
+            if attempt + 1 == max_retries:
+                return (
+                    "The service is currently busy. Please try again in a few moments."
+                )
+            time.sleep(base_delay * (2**attempt))
+
+    return "An unexpected error occurred after multiple retries."
+
+
+def generate_grounded_answer(query: str) -> str:
+    """
+    Generate a grounded answer using Vertex AI native grounding.
+
+    Results are cached per process to avoid repeated calls when the same
+    question is asked multiple times during replans or across requests.
+    """
+
+    return _generate_grounded_answer_cached(query)
+
+
+__all__ = [
+    "fetch_player_stats",
+    "find_player_id",
+    "generate_grounded_answer",
+    "generate_player_stats_answer",
+]

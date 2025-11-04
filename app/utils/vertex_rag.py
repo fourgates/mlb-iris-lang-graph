@@ -1,7 +1,7 @@
 import os
 import time
 from dataclasses import dataclass
-from typing import List, Tuple, Any
+from typing import Any
 
 from google.api_core.exceptions import ServiceUnavailable
 from vertexai import init as vertex_init
@@ -13,7 +13,7 @@ DEFAULT_LOCATION = "us-east4"
 DEFAULT_RAG_CORPUS_NAME = (
     "projects/mlb-iris-production/locations/us-east4/ragCorpora/4611686018427387904"
 )
-DEFAULT_TOP_K = 4
+DEFAULT_TOP_K = 15
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -28,7 +28,7 @@ class VertexRAGClient:
     project_id: str
     location: str
     rag_corpus_name: str
-    top_k: int = 4
+    top_k: int = 15
 
     @classmethod
     def from_env(cls) -> "VertexRAGClient":
@@ -55,16 +55,35 @@ class VertexRAGClient:
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                return vertex_rag.retrieval_query(
+                result = vertex_rag.retrieval_query(
                     text=query_text,
                     rag_corpora=[self.rag_corpus_name],
                     similarity_top_k=self.top_k,
-                    vector_distance_threshold=0.8,
+                    vector_distance_threshold=0.6,
                 )
+                # Log raw result shape and a few previews
+                try:
+                    contexts = (
+                        getattr(getattr(result, "contexts", None), "contexts", []) or []
+                    )
+                    from_len = len(contexts)
+                    print(
+                        f"[RAG:_retrieve] query={query_text!r} corpora={self.rag_corpus_name} top_k={self.top_k} contexts={from_len}"
+                    )
+                    for i, c in enumerate(contexts[:3], 1):
+                        src = getattr(c, "source_uri", None)
+                        dist = getattr(c, "distance", None)
+                        txt = getattr(c, "text", "")
+                        print(
+                            f"[RAG:_retrieve] #{i} source={src!r} distance={dist} preview={txt[:500]!r}"
+                        )
+                except Exception:
+                    pass
+                return result
             except ServiceUnavailable as e:
                 last_exc = e
                 time.sleep(1.0 * (2**attempt))
-            except Exception as e:  # noqa: BLE001 - surface message to caller
+            except Exception as e:
                 last_exc = e
                 break
         if last_exc is not None:
@@ -72,13 +91,15 @@ class VertexRAGClient:
         return None
 
     @staticmethod
-    def _build_citations(raw_contexts: List[object]) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+    def _build_citations(
+        raw_contexts: list[object],
+    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         # Returns (tagged_snippets, sources)
         # tagged_snippets: [(tag, snippet)]
         # sources: [(tag, uri)]
         citation_map: dict[str, str] = {}
-        tagged_snippets: List[Tuple[str, str]] = []
-        sources: List[Tuple[str, str]] = []
+        tagged_snippets: list[tuple[str, str]] = []
+        sources: list[tuple[str, str]] = []
 
         if not raw_contexts:
             return tagged_snippets, sources
@@ -119,11 +140,7 @@ class VertexRAGClient:
         if not tagged_snippets:
             return "No relevant information found in the RAG corpus."
 
-        lines: List[str] = []
-        max_chars = 400
-        for tag, text in tagged_snippets:
-            snippet = text if len(text) <= max_chars else f"{text[:max_chars]}…"
-            lines.append(f"({tag}) {snippet}")
+        lines: list[str] = [f"({tag}) {text}" for tag, text in tagged_snippets]
 
         if sources:
             lines.append("")
@@ -132,5 +149,3 @@ class VertexRAGClient:
                 lines.append(f"({tag}) {uri}")
 
         return "\n".join(lines)
-
-

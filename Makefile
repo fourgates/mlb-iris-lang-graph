@@ -8,7 +8,7 @@ install:
 	uv sync --dev --extra streamlit
 
 # ==============================================================================
-# Playground Targets
+# can ground Targets
 # ==============================================================================
 
 # Launch local dev playground
@@ -17,8 +17,9 @@ playground:
 	@echo "| 🚀 Starting your agent playground...                                        |"
 	@echo "|                                                                             |"
 	@echo "| 💡 Try asking: What's the weather in San Francisco?                         |"
+	@echo "| 🧪 ALWAYS_CONFIRM_PLAYER is enabled for interrupt testing                   |"
 	@echo "==============================================================================="
-	PYTHONPATH=. uv run python -m streamlit run frontend/streamlit_app.py --browser.serverAddress=localhost --server.enableCORS=false --server.enableXsrfProtection=false
+	PYTHONUNBUFFERED=1 PYTHONPATH=. ALWAYS_CONFIRM_PLAYER=true uv run python -m streamlit run frontend/streamlit_app.py --browser.serverAddress=localhost --server.enableCORS=false --server.enableXsrfProtection=false --logger.level=info
 
 # ==============================================================================
 # Backend Deployment Targets
@@ -28,7 +29,7 @@ playground:
 backend:
 	# Export dependencies to requirements file using uv export.
 	uv export --no-hashes --no-header --no-dev --no-emit-project --no-annotate > .requirements.txt 2>/dev/null || \
-	uv export --no-hashes --no-header --no-dev --no-emit-project > .requirements.txt && uv run app/agent_engine_app.py
+	uv export --no-hashes --no-header --no-dev --no-emit-project > .requirements.txt && PYTHONUNBUFFERED=1 uv run app/agent_engine_app.py
 
 
 # ==============================================================================
@@ -48,10 +49,19 @@ setup-dev-env:
 test:
 	uv run pytest tests/unit && uv run pytest tests/integration
 
-# Run code quality checks (codespell, ruff, mypy)
+# Run code quality checks (ruff, mypy)
 lint:
 	uv sync --dev --extra lint
-	uv run codespell
 	uv run ruff check . --diff
 	uv run ruff format . --check --diff
 	uv run mypy .
+
+# Visualize the LangGraph structure
+visualize:
+	@echo "==============================================================================="
+	@echo "| 📊 Generating graph visualization...                                        |"
+	@echo "==============================================================================="
+	uv run python visualize_graph.py
+	@echo ""
+	@echo "✅ Graph visualization saved to: graph_visualization.png"
+	@echo "📝 Mermaid syntax printed above (can be used in docs/Markdown)"

@@ -18,6 +18,8 @@ lang-graph-iris/
 ├── notebooks/           # Jupyter notebooks for prototyping and evaluation
 ├── tests/               # Unit, integration, and load tests
 ├── Makefile             # Makefile for common commands
+├── visualize_graph.py   # Script to generate graph visualization
+├── graph_visualization.png # Generated graph visualization (run `make visualize`)
 ├── GEMINI.md            # AI-assisted development guide
 └── pyproject.toml       # Project dependencies and configuration
 ```
@@ -48,6 +50,7 @@ make install && make playground
 | `make backend`       | Deploy agent to Agent Engine |
 | `make test`          | Run unit and integration tests                                                              |
 | `make lint`          | Run code quality checks (codespell, ruff, mypy)                                             |
+| `make visualize`     | Generate a visual representation of the LangGraph structure (PNG + Mermaid syntax)           |
 | `make setup-dev-env` | Set up development environment resources using Terraform                         |
 | `uv run jupyter lab` | Launch Jupyter notebook                                                                     |
 

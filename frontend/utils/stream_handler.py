@@ -15,6 +15,7 @@
 # mypy: disable-error-code="unreachable"
 import importlib
 import json
+import logging
 import uuid
 from collections.abc import Generator
 from typing import Any
@@ -151,7 +152,14 @@ class Client:
         self, data: dict[str, Any]
     ) -> Generator[dict[str, Any], None, None]:
         """Stream events from the server, yielding parsed event data."""
+        # Extract resume_command if present (for resuming from interrupt)
+        resume_command = data.pop("resume_command", None)
+
         if self.url:
+            # Remote URL - add resume_command to request if present
+            request_data = {**data}
+            if resume_command:
+                request_data["resume_command"] = resume_command
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream",
@@ -159,7 +167,7 @@ class Client:
             if self.authenticate_request:
                 headers["Authorization"] = f"Bearer {self.id_token}"
             with requests.post(
-                self.url, json=data, headers=headers, stream=True, timeout=60
+                self.url, json=request_data, headers=headers, stream=True, timeout=60
             ) as response:
                 for line in response.iter_lines():
                     if line:
@@ -169,7 +177,11 @@ class Client:
                         except json.JSONDecodeError:
                             print(f"Failed to parse event: {line.decode('utf-8')}")
         elif self.agent is not None:
-            yield from self.agent.stream_query(**data)
+            # Local agent - pass resume_command to stream_query
+            yield from self.agent.stream_query(
+                **data,
+                resume_command=resume_command,
+            )
 
 
 class StreamHandler:
@@ -206,30 +218,101 @@ class EventProcessor:
         self.tool_calls: list[dict[str, Any]] = []
         self.current_run_id: str | None = None
         self.additional_kwargs: dict[str, Any] = {}
+        self.interrupt_data: dict[str, Any] | None = None
+        self.interrupt_thread_id: str | None = None
 
-    def process_events(self) -> None:
-        """Process events from the stream, handling each event type appropriately."""
+    def process_events(self, resume_command: Any | None = None) -> None:
+        """Process events from the stream, handling interrupts and resume commands."""
         messages = self.st.session_state.user_chats[
             self.st.session_state["session_id"]
         ]["messages"]
         self.current_run_id = str(uuid.uuid4())
         # Set run_id in session state at start of processing
         self.st.session_state["run_id"] = self.current_run_id
+
+        # Reset final_content for resume (important!)
+        self.final_content = ""
+        self.tool_calls = []
+
+        # Get thread_id (use session_id as thread_id for persistence)
+        thread_id = (
+            self.st.session_state.get("thread_id")
+            or self.st.session_state["session_id"]
+        )
+        if "thread_id" not in self.st.session_state:
+            self.st.session_state["thread_id"] = thread_id
+
         stream = self.client.stream_messages(
             data={
                 "input": {"messages": messages},
                 "config": {
+                    "configurable": {
+                        "thread_id": thread_id
+                    },  # NEW: thread_id for checkpointer
                     "run_id": self.current_run_id,
                     "metadata": {
                         "user_id": self.st.session_state["user_id"],
                         "session_id": self.st.session_state["session_id"],
                     },
                 },
+                "resume_command": resume_command,  # NEW: for resuming from interrupt
             }
         )
-        # Each event is a tuple message, metadata. https://langchain-ai.github.io/langgraph/how-tos/streaming/#messages
-        for message, _ in stream:
+        # Process stream events - handle interrupts before normal messages
+        logging.info(
+            "[EventProcessor] Starting event processing (resume_command=%s)",
+            resume_command is not None,
+        )
+        message_count = 0
+        for message in stream:
+            message_count += 1
+            # Handle tuple format (message, metadata) from LangGraph streaming
+            if isinstance(message, tuple):
+                message_item, _ = message
+                message = message_item
+
             if isinstance(message, dict):
+                logging.debug(
+                    "[EventProcessor] Processing message #%d: type=%s, keys=%s",
+                    message_count,
+                    message.get("type"),
+                    list(message.keys())[:5],  # First 5 keys for debugging
+                )
+                # Log detailed structure for ai type messages to debug
+                if message.get("type") == "ai" or (
+                    message.get("type") == "constructor"
+                    and message.get("kwargs", {}).get("type") == "ai"
+                ):
+                    top_content = message.get("content")
+                    kwargs_content = (
+                        message.get("kwargs", {}).get("content")
+                        if "kwargs" in message
+                        else None
+                    )
+                    actual_content = top_content or kwargs_content
+                    logging.info(
+                        "[EventProcessor] Found AI message: type=%s, has_content_key=%s, has_content_value=%s, "
+                        "content_preview=%s, content_type=%s",
+                        message.get("type"),
+                        "content" in message or "content" in message.get("kwargs", {}),
+                        bool(actual_content),
+                        str(actual_content)[:100] if actual_content else "None/Empty",
+                        type(actual_content),
+                    )
+                # Check for interrupt event FIRST (before other message processing)
+                if message.get("type") == "interrupt":
+                    self.interrupt_data = message.get("data")
+                    self.interrupt_thread_id = message.get("thread_id")
+                    # Store interrupt data directly (it's already the list of Interrupt objects)
+                    self.st.session_state.pending_interrupt = self.interrupt_data
+                    self.st.session_state.interrupt_thread_id = self.interrupt_thread_id
+                    logging.info(
+                        "[EventProcessor] Interrupt detected: thread_id=%s, data=%s",
+                        self.interrupt_thread_id,
+                        self.interrupt_data,
+                    )
+                    return  # Stop processing, wait for user input
+
                 if message.get("type") == "constructor":
                     message = message["kwargs"]
 
@@ -266,8 +349,69 @@ class EventProcessor:
                     # This is used when receiving a full message rather than chunks
                     elif message.get("content") and message.get("type") == "ai":
                         self.final_content = message.get("content")
+                        logging.info(
+                            "[EventProcessor] Captured final AI message: content_length=%d",
+                            len(self.final_content),
+                        )
 
-        # Handle end of stream
+                # Handle complete AI responses that are NOT in constructor format
+                # (e.g., messages yielded directly from agent_engine_app)
+                # NOTE: When dumpd() creates constructor format but we overwrite type="ai",
+                # the content might still be in kwargs, so we need to check both places
+                msg_type = message.get("type")
+
+                # Log ALL messages with type="ai" to debug
+                if msg_type == "ai":
+                    logging.info(
+                        "[EventProcessor] Processing AI message: has_content=%s, content_type=%s, "
+                        "has_kwargs=%s, keys=%s",
+                        bool(message.get("content")),
+                        type(message.get("content")),
+                        "kwargs" in message,
+                        list(message.keys())[:10],
+                    )
+
+                    # Check for content in top-level or kwargs (in case of hybrid format)
+                    content = message.get("content")
+                    if not content and "kwargs" in message:
+                        # Content might be in kwargs if dumpd created constructor but type was overwritten
+                        kwargs_content = message.get("kwargs", {}).get("content")
+                        if kwargs_content:
+                            logging.info(
+                                "[EventProcessor] Found content in kwargs, extracting it"
+                            )
+                            content = kwargs_content
+
+                    if content:
+                        self.final_content = (
+                            content if isinstance(content, str) else str(content)
+                        )
+                        logging.info(
+                            "[EventProcessor] ✓✓✓ CAPTURED final AI message: content_length=%d",
+                            len(self.final_content),
+                        )
+                    else:
+                        # Log why it didn't match - this helps debug
+                        logging.error(
+                            "[EventProcessor] ✗✗✗ AI message detected but NO CONTENT FOUND: "
+                            "type=%s, has_top_content=%s, top_content=%s, has_kwargs=%s, "
+                            "kwargs_content=%s, kwargs_keys=%s, all_keys=%s",
+                            msg_type,
+                            bool(message.get("content")),
+                            str(message.get("content"))[:50]
+                            if message.get("content")
+                            else None,
+                            "kwargs" in message,
+                            str(message.get("kwargs", {}).get("content", ""))[:50]
+                            if "kwargs" in message
+                            else None,
+                            list(message.get("kwargs", {}).keys())[:5]
+                            if "kwargs" in message
+                            else [],
+                            list(message.keys())[:10],
+                        )
+
+        # Handle end of stream - only if no interrupt was detected
         if self.final_content:
             final_message = AIMessage(
                 content=self.final_content,
@@ -280,9 +424,25 @@ class EventProcessor:
             )
             self.st.session_state.user_chats[session]["messages"].append(final_message)
             self.st.session_state.run_id = self.current_run_id
+            logging.info(
+                "[EventProcessor] Added final message to chat history: content=%s",
+                self.final_content[:100]
+                if len(self.final_content) > 100
+                else self.final_content,
+            )
+        else:
+            logging.warning(
+                "[EventProcessor] Stream completed but no final_content to add (resume_command=%s)",
+                resume_command is not None,
+            )
 
 
-def get_chain_response(st: Any, client: Client, stream_handler: StreamHandler) -> None:
+def get_chain_response(
+    st: Any,
+    client: Client,
+    stream_handler: StreamHandler,
+    resume_command: Any | None = None,
+) -> None:
     """Process the chain response update the Streamlit UI.
 
     This function initiates the event processing for a chain of operations,
@@ -297,6 +457,8 @@ def get_chain_response(st: Any, client: Client, stream_handler: StreamHandler) -
         stream_handler (StreamHandler): An instance of the StreamHandler class
                                       used to update the Streamlit UI with
                                       streaming content.
+        resume_command (Any | None): Optional Command(resume=...) for resuming
+                                     from interrupt. Defaults to None.
 
     Returns:
         None
@@ -305,6 +467,7 @@ def get_chain_response(st: Any, client: Client, stream_handler: StreamHandler) -
         - Updates the Streamlit UI with streaming tokens and tool call information.
         - Modifies the session state to include the final AI message and run ID.
         - Handles various events like chain starts/ends, tool calls, and model outputs.
+        - Detects interrupts and stores them in session state.
     """
     processor = EventProcessor(st, client, stream_handler)
-    processor.process_events()
+    processor.process_events(resume_command=resume_command)
