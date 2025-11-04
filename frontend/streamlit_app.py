@@ -339,7 +339,7 @@ def resume_interrupt(selected_player_id: int, side_bar: SideBar) -> None:
         return
 
     # Create resume command
-    resume_command: Command = Command[tuple[()]](resume=selected_player_id)
+    resume_command: Command = Command(resume=selected_player_id)
 
     # Clear interrupt state BEFORE resuming (prevent loops)
     if "pending_interrupt" in st.session_state:

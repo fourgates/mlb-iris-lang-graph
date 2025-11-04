@@ -32,6 +32,9 @@ def test_agent_stream_query(agent_app: AgentEngineApp) -> None:
     Integration test for the agent stream query functionality.
     Tests that the agent returns valid streaming responses.
     """
+    import uuid
+    from langchain_core.runnables import RunnableConfig
+
     input_dict = {
         "messages": [
             {"type": "human", "content": "Test message"},
@@ -40,28 +43,40 @@ def test_agent_stream_query(agent_app: AgentEngineApp) -> None:
         "session_id": "test-session",
     }
 
-    events = list(agent_app.stream_query(input=input_dict))
+    config: RunnableConfig = {
+        "configurable": {"thread_id": str(uuid.uuid4())}
+    }
+
+    events = list(agent_app.stream_query(input=input_dict, config=config))
 
     assert len(events) > 0, "Expected at least one chunk in response"
 
-    # Verify each event is a tuple of message and metadata
-    for event in events:
-        assert isinstance(event, list), "Event should be a list"
-        assert len(event) == 2, "Event should contain message and metadata"
-        message, _ = event
-
-        # Verify message structure
-        assert isinstance(message, dict), "Message should be a dictionary"
-        assert message["type"] == "constructor"
-        assert "kwargs" in message, "Constructor message should have kwargs"
-
-    # Verify at least one message has content
+    # Verify each event structure - can be either:
+    # 1. List format: [message_dict, metadata]
+    # 2. Direct dict format: {"type": "ai", "content": "..."}
     has_content = False
     for event in events:
-        message = event[0]
-        if message.get("type") == "constructor" and "content" in message["kwargs"]:
-            has_content = True
-            break
+        if isinstance(event, list):
+            # Old format: [message_dict, metadata]
+            assert len(event) == 2, "Event should contain message and metadata"
+            message = event[0]
+            assert isinstance(message, dict), "Message should be a dictionary"
+            # Message can be constructor format or direct format
+            if message.get("type") == "constructor":
+                assert "kwargs" in message, "Constructor message should have kwargs"
+                if "content" in message.get("kwargs", {}):
+                    has_content = True
+            elif message.get("type") == "ai" and message.get("content"):
+                has_content = True
+        elif isinstance(event, dict):
+            # New format: direct dict with type and content
+            assert "type" in event, "Message should have type"
+            if event.get("type") == "ai" and event.get("content"):
+                has_content = True
+            elif event.get("type") == "constructor" and "kwargs" in event:
+                if "content" in event.get("kwargs", {}):
+                    has_content = True
+
     assert has_content, "At least one message should have content"
 
 
@@ -70,6 +85,9 @@ def test_agent_query(agent_app: AgentEngineApp) -> None:
     Integration test for the agent query functionality.
     Tests that the agent returns valid responses.
     """
+    import uuid
+    from langchain_core.runnables import RunnableConfig
+
     input_dict = {
         "messages": [
             {"type": "human", "content": "Test message"},
@@ -78,7 +96,11 @@ def test_agent_query(agent_app: AgentEngineApp) -> None:
         "session_id": "test-session",
     }
 
-    response = agent_app.query(input=input_dict)
+    config: RunnableConfig = {
+        "configurable": {"thread_id": str(uuid.uuid4())}
+    }
+
+    response = agent_app.query(input=input_dict, config=config)
 
     # Basic response validation
     assert isinstance(response, dict), "Response should be a dictionary"

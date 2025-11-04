@@ -60,11 +60,16 @@ def get_player_stats(player_id: int) -> dict[str, Any]:
         if not splits:
             continue
         stats = splits[0].get("stat", {})
+        # Extract season from the stat_group if available
+        season = stat_group.get("season", current_year)
         result["stats"]["hitting_season"] = {
+            "season": season,  # Include season year
             "avg": stats.get("avg", ".000"),
             "ops": stats.get("ops", ".000"),
             "home_runs": stats.get("homeRuns", 0),
             "rbi": stats.get("rbi", 0),
+            "hits": stats.get("hits", 0),
+            "at_bats": stats.get("atBats", 0),
         }
     return result
 

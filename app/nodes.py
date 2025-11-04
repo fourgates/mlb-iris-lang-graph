@@ -31,6 +31,7 @@ from .verification import judge_answer
 def extract_message_content(message: dict | object) -> str:
     """
     Extract content from a message, handling both dict and LangChain message objects.
+    Handles list content (parts format) like [{'type': 'text', 'text': '...'}].
 
     Args:
         message: Either a dict with 'content' key or a LangChain message object with .content attribute
@@ -42,17 +43,34 @@ def extract_message_content(message: dict | object) -> str:
         ValueError: If message is a dict but missing 'content' key
         TypeError: If message is neither a dict nor has a 'content' attribute
     """
+
+    def extract_from_content(content: str | list | object) -> str:
+        """Extract text from content, handling both string and list formats."""
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            # Handle parts format: [{'type': 'text', 'text': '...'}, ...]
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text" and "text" in part:
+                        text_parts.append(str(part["text"]))
+                    elif "text" in part:
+                        # Fallback: if there's a 'text' key, use it
+                        text_parts.append(str(part["text"]))
+                elif isinstance(part, str):
+                    text_parts.append(part)
+            return " ".join(text_parts) if text_parts else str(content)
+        else:
+            return str(content)
+
     if isinstance(message, dict):
         content = message.get("content")
         if content is None:
             raise ValueError(f"Message dict missing 'content': {message}")
-        return str(content) if not isinstance(content, str) else content
+        return extract_from_content(content)
     elif hasattr(message, "content"):
-        return (
-            message.content
-            if isinstance(message.content, str)
-            else str(message.content)
-        )
+        return extract_from_content(message.content)
     else:
         raise TypeError(f"Unexpected message type: {type(message)}")
 
@@ -176,6 +194,7 @@ def route_query_node(state: State) -> dict:
         "route": route,
         "extracted_name": extracted_name,
         "extracted_team": extracted_team,
+        "last_user_query": query,  # Store query for verification
     }
     log_end("route_query", **result)
     return result
@@ -332,15 +351,17 @@ def planner_node(state: State) -> dict:
             # Fallback: use the first message if no HumanMessage found
             user_messages = [state["messages"][0]] if state["messages"] else []
 
-        # If this is a replan attempt, add context about what was missing
+        # Build context for replan attempts
         verification_reason = state.get("verification_reason")
         replan_attempts = state.get("replan_attempts", 0)
+        context_parts = []
+
+        # If this is a replan attempt, add feedback about what was missing
         if verification_reason and replan_attempts > 0:
-            replan_context = (
+            context_parts.append(
                 f"Previous attempt was incomplete. Feedback: {verification_reason}. "
                 f"Please provide a more complete answer addressing all parts of the question."
             )
-            user_messages.insert(0, SystemMessage(content=replan_context))
             logging.info(
                 "[planner] REPLAN ATTEMPT #%d: Adding feedback context to guide improvement",
                 replan_attempts,
@@ -351,14 +372,64 @@ def planner_node(state: State) -> dict:
                 if len(verification_reason) > 200
                 else verification_reason,
             )
-            logging.info(
-                "[planner] Full replan context message: %s",
-                replan_context[:300] if len(replan_context) > 300 else replan_context,
-            )
         elif replan_attempts > 0:
             logging.warning(
                 "[planner] REPLAN ATTEMPT #%d but no verification_reason found in state",
                 replan_attempts,
+            )
+
+        # IMPORTANT: If stats were already fetched, pass them to planner so it doesn't need to fetch again
+        # This is critical for replan attempts from PLAYER_STATS subgraph
+        player_id = state.get("player_id")
+        stats = state.get("stats")
+        if player_id and stats:
+            # Format stats for context - include ALL relevant stats with season info
+            hitting = (
+                stats.get("stats", {}).get("hitting_season", {})
+                if isinstance(stats, dict)
+                else {}
+            )
+            stats_summary = []
+            season_info = ""
+            if hitting:
+                # Include season first if available
+                if hitting.get("season"):
+                    season_info = f"for the {hitting.get('season')} season"
+                if hitting.get("avg") is not None:
+                    stats_summary.append(f"Batting Average: {hitting.get('avg')}")
+                if hitting.get("home_runs") is not None:
+                    stats_summary.append(f"Home Runs: {hitting.get('home_runs')}")
+                if hitting.get("ops") is not None:
+                    stats_summary.append(f"OPS: {hitting.get('ops')}")
+                if hitting.get("rbi") is not None:
+                    stats_summary.append(f"RBI: {hitting.get('rbi')}")
+                if hitting.get("at_bats") is not None:
+                    stats_summary.append(f"At Bats: {hitting.get('at_bats')}")
+                if hitting.get("hits") is not None:
+                    stats_summary.append(f"Hits: {hitting.get('hits')}")
+
+            if stats_summary:
+                season_text = f" {season_info}" if season_info else ""
+                context_parts.append(
+                    f"CRITICAL: Player statistics have already been fetched for player_id={player_id}{season_text}. "
+                    f"Complete stats: {', '.join(stats_summary)}. "
+                    f"You MUST use these stats directly - do NOT call get_player_statistics or search_for_player again. "
+                    f"Answer the user's question using these exact statistics."
+                )
+                logging.info(
+                    "[planner] Including pre-fetched stats in context: player_id=%s, season=%s, stats_summary=%s",
+                    player_id,
+                    hitting.get("season") if hitting else None,
+                    stats_summary,
+                )
+
+        # Combine all context and add as system message
+        if context_parts:
+            replan_context = "\n\n".join(context_parts)
+            user_messages.insert(0, SystemMessage(content=replan_context))
+            logging.info(
+                "[planner] Full replan context message: %s",
+                replan_context[:300] if len(replan_context) > 300 else replan_context,
             )
 
         logging.info(
@@ -443,72 +514,112 @@ def verify_answer_node(state: State) -> dict:
     Extracts the original query and final answer, then uses judge_answer()
     to determine if the answer is complete. Updates replan_attempts and
     verification_status accordingly.
+
+    Uses last_user_query from state if available, otherwise searches messages.
     """
     log_start("verify_answer")
 
     try:
-        # Extract original query from first message
-        if not state["messages"]:
-            logging.warning("[verify_answer] No messages in state")
-            result = {
-                "verification_status": "OK",
-                "replan_attempts": state.get("replan_attempts", 0),
-            }
-            log_end("verify_answer", status="OK", reason="no_messages")
-            return result
+        # PRIMARY: Use last_user_query from state (set by route_query_node)
+        query: str | None = state.get("last_user_query")
 
-        query: str | None = None
-        # Log message types for debugging
-        message_types = [type(msg).__name__ for msg in state["messages"]]
-        logging.debug("[verify_answer] Message types in state: %s", message_types)
-
-        # First, try to find the most recent HumanMessage (user's latest query)
-        for msg in reversed(state["messages"]):
-            if isinstance(msg, HumanMessage):
-                query = extract_message_content(msg)
-                logging.info(
-                    "[verify_answer] Found HumanMessage (reverse search): %s",
-                    query[:100] if len(query) > 100 else query,
-                )
-                break
-
-        # If no HumanMessage found, search from the beginning (original query)
-        if query is None:
-            logging.warning(
-                "[verify_answer] No HumanMessage found in reverse order; searching from start"
+        if query:
+            logging.info(
+                "[verify_answer] Using last_user_query from state: %s",
+                query[:100] if len(query) > 100 else query,
             )
-            for msg in state["messages"]:
+        else:
+            # FALLBACK: Search messages for HumanMessage
+            if not state["messages"]:
+                logging.warning("[verify_answer] No messages in state")
+                result = {
+                    "verification_status": "OK",
+                    "replan_attempts": state.get("replan_attempts", 0),
+                }
+                log_end("verify_answer", status="OK", reason="no_messages")
+                return result
+
+            # Log message types for debugging
+            message_types = [type(msg).__name__ for msg in state["messages"]]
+            logging.debug("[verify_answer] Message types in state: %s", message_types)
+
+            # Try to find HumanMessage in messages
+            # Handle both LangChain message objects and serialized dicts
+            for msg in reversed(state["messages"]):
+                # Check if it's a HumanMessage object
                 if isinstance(msg, HumanMessage):
                     query = extract_message_content(msg)
                     logging.info(
-                        "[verify_answer] Found HumanMessage (forward search): %s",
+                        "[verify_answer] Found HumanMessage (reverse search): %s",
                         query[:100] if len(query) > 100 else query,
                     )
                     break
+                # Check if it's a serialized HumanMessage dict (not a LangChain object)
+                elif not hasattr(msg, "content") and isinstance(msg, dict):
+                    msg_type = msg.get("type") or msg.get("_type")
+                    if msg_type == "human":
+                        query = extract_message_content(msg)
+                        logging.info(
+                            "[verify_answer] Found HumanMessage dict (reverse search): %s",
+                            query[:100] if len(query) > 100 else query,
+                        )
+                        break
 
-        # Last resort: use first message if it has content (but log warning)
-        if query is None:
-            logging.warning(
-                "[verify_answer] No HumanMessage found in state; using first message as fallback"
-            )
-            if state["messages"]:
-                first_msg = state["messages"][0]
-                query = extract_message_content(first_msg)
-                # Validate it's not an AIMessage (which would be wrong)
-                if isinstance(first_msg, AIMessage):
-                    logging.error(
-                        "[verify_answer] First message is AIMessage, not HumanMessage! "
-                        "This will cause incorrect verification."
+            # If still not found, search from the beginning
+            if query is None:
+                logging.warning(
+                    "[verify_answer] No HumanMessage found in reverse order; searching from start"
+                )
+                for msg in state["messages"]:
+                    if isinstance(msg, HumanMessage):
+                        query = extract_message_content(msg)
+                        logging.info(
+                            "[verify_answer] Found HumanMessage (forward search): %s",
+                            query[:100] if len(query) > 100 else query,
+                        )
+                        break
+                    elif not hasattr(msg, "content") and isinstance(msg, dict):
+                        msg_type = msg.get("type") or msg.get("_type")
+                        if msg_type == "human":
+                            query = extract_message_content(msg)
+                            logging.info(
+                                "[verify_answer] Found HumanMessage dict (forward search): %s",
+                                query[:100] if len(query) > 100 else query,
+                            )
+                            break
+
+            # Last resort: use first message if it has content (but log warning)
+            if query is None:
+                logging.warning(
+                    "[verify_answer] No HumanMessage found in state; using first message as fallback"
+                )
+                if state["messages"]:
+                    first_msg = state["messages"][0]
+                    query = extract_message_content(first_msg)
+                    # Validate it's not an AIMessage (which would be wrong)
+                    is_ai = isinstance(first_msg, AIMessage) or (
+                        isinstance(first_msg, dict) and first_msg.get("type") == "ai"
                     )
-            else:
-                query = "Unknown query"
+                    if is_ai:
+                        logging.error(
+                            "[verify_answer] First message is AIMessage, not HumanMessage! "
+                            "This will cause incorrect verification."
+                        )
+                else:
+                    query = "Unknown query"
 
         # Extract final answer from last AIMessage
+        # Handle both LangChain message objects and serialized dicts
         final_answer = None
         for msg in reversed(state["messages"]):
             if isinstance(msg, AIMessage):
                 final_answer = extract_message_content(msg)
                 break
+            elif not hasattr(msg, "content") and isinstance(msg, dict):
+                msg_type = msg.get("type") or msg.get("_type")
+                if msg_type == "ai":
+                    final_answer = extract_message_content(msg)
+                    break
 
         if not final_answer:
             logging.warning("[verify_answer] No AIMessage found in state")

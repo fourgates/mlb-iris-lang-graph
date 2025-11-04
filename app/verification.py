@@ -8,22 +8,30 @@ to determine if a user's question was fully answered.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from .services import llm_langchain
 
-JUDGE_PROMPT = """You are evaluating whether an AI assistant's answer fully addresses a user's question.
+CURRENT_YEAR = datetime.now().year
 
-User Question: {query}
+JUDGE_PROMPT = f"""You are evaluating whether an AI assistant's answer fully addresses a user's question.
 
-Assistant Answer: {answer}
+IMPORTANT CONTEXT: The current year is {CURRENT_YEAR}. When evaluating answers about MLB statistics, references to the {CURRENT_YEAR} season are VALID and ACCURATE. Do NOT reject answers that correctly reference the {CURRENT_YEAR} season.
+
+User Question: {{query}}
+
+Assistant Answer: {{answer}}
 
 Evaluate if the assistant's answer COMPLETELY addresses the user's question. Consider:
 - Are all parts of the question answered?
 - Is the information accurate and relevant?
 - Is the answer complete (not partial or vague)?
+- Does it include appropriate temporal context (season/year)?
+
+CRITICAL: If the answer references the {CURRENT_YEAR} season, this is CORRECT - do not reject it based on the year.
 
 If the answer is incomplete, provide a brief explanation of what is missing or unclear."""
 

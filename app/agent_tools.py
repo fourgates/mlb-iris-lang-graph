@@ -53,14 +53,30 @@ def get_player_statistics(player_id: int) -> dict[str, Any] | str:
 
 @tool
 def query_document_knowledge_base(query: str) -> str:
-    """Answers questions about MLB rules, policies, and definitions using a document knowledge base."""
+    """Answers questions about MLB rules, policies, and definitions using a document knowledge base.
+
+    The tool returns answers with inline citations (e.g., [0], [1]) embedded in the text
+    and a Sources section at the end. You MUST preserve both the inline citations and the
+    Sources section when including this information in your response.
+
+    Example format:
+    "The injured list includes several types[0][1]. There are 7-day, 10-day, and 15-day lists[0].
+
+    Sources:
+    [0] 2025 Major League Rules.pdf, p.23-25
+    [1] 2025 Major League Regulation.pdf, p.150-152"
+
+    Do not remove or summarize away the citations - they are required!
+    """
     logging.info(
         "[tool] query_document_knowledge_base called with query=%r",
         query[:100] if len(query) > 100 else query,
     )
     result = generate_grounded_answer(query)
     logging.info(
-        "[tool] query_document_knowledge_base result: length=%d chars", len(result)
+        "[tool] query_document_knowledge_base result: length=%d chars, has_citations=%s",
+        len(result),
+        "Sources:" in result or "[" in result[:100],
     )
     return result
 

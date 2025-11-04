@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
@@ -145,13 +146,19 @@ def generate_player_stats_answer(query: str, stats: dict[str, Any] | None) -> st
     )
 
     if hitting:
+        season = hitting.get("season", datetime.now().year)
         prompt = (
-            "You are an expert MLB analyst. Here is the player's season hitting data:\n"
-            f"AVG: {hitting.get('avg', '.000')}\n"
-            f"HR: {hitting.get('home_runs', 0)}\n"
+            "You are an expert MLB analyst. Here is the player's hitting statistics "
+            f"for the {season} season:\n"
+            f"Batting Average (AVG): {hitting.get('avg', '.000')}\n"
+            f"Home Runs (HR): {hitting.get('home_runs', 0)}\n"
             f"OPS: {hitting.get('ops', '.000')}\n"
-            f"RBI: {hitting.get('rbi', 0)}\n\n"
-            "Based on this data, answer the user's question.\n"
+            f"RBI: {hitting.get('rbi', 0)}\n"
+            f"Hits: {hitting.get('hits', 0)}\n"
+            f"At Bats: {hitting.get('at_bats', 0)}\n\n"
+            "IMPORTANT: Answer the user's question directly and completely. "
+            "If they ask about a specific statistic, provide that statistic with its season context. "
+            "Be concise but include the season year in your answer.\n\n"
             f"Question: {query}\nAnswer:"
         )
     else:

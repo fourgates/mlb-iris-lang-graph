@@ -20,6 +20,7 @@ class State(TypedDict):
     extracted_name: str | None
     extracted_team: str | None
     route: str  # Either "PLAYER_STATS", "DOCUMENT_QA", "MULTI_DOMAIN", or "HELLO"
+    last_user_query: str | None  # Store the original user query for verification
     replan_attempts: int  # Track number of replan attempts
     verification_status: Literal["OK", "REPLAN"] | None  # Verification result
     verification_reason: (

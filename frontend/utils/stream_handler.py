@@ -278,6 +278,27 @@ class EventProcessor:
                     message.get("type"),
                     list(message.keys())[:5],  # First 5 keys for debugging
                 )
+                # Log detailed structure for ai type messages to debug
+                if message.get("type") == "ai" or (
+                    message.get("type") == "constructor"
+                    and message.get("kwargs", {}).get("type") == "ai"
+                ):
+                    top_content = message.get("content")
+                    kwargs_content = (
+                        message.get("kwargs", {}).get("content")
+                        if "kwargs" in message
+                        else None
+                    )
+                    actual_content = top_content or kwargs_content
+                    logging.info(
+                        "[EventProcessor] Found AI message: type=%s, has_content_key=%s, has_content_value=%s, "
+                        "content_preview=%s, content_type=%s",
+                        message.get("type"),
+                        "content" in message or "content" in message.get("kwargs", {}),
+                        bool(actual_content),
+                        str(actual_content)[:100] if actual_content else "None/Empty",
+                        type(actual_content),
+                    )
                 # Check for interrupt event FIRST (before other message processing)
                 if message.get("type") == "interrupt":
                     self.interrupt_data = message.get("data")
@@ -328,6 +349,67 @@ class EventProcessor:
                     # This is used when receiving a full message rather than chunks
                     elif message.get("content") and message.get("type") == "ai":
                         self.final_content = message.get("content")
+                        logging.info(
+                            "[EventProcessor] Captured final AI message: content_length=%d",
+                            len(self.final_content),
+                        )
+
+                # Handle complete AI responses that are NOT in constructor format
+                # (e.g., messages yielded directly from agent_engine_app)
+                # NOTE: When dumpd() creates constructor format but we overwrite type="ai",
+                # the content might still be in kwargs, so we need to check both places
+                msg_type = message.get("type")
+
+                # Log ALL messages with type="ai" to debug
+                if msg_type == "ai":
+                    logging.info(
+                        "[EventProcessor] Processing AI message: has_content=%s, content_type=%s, "
+                        "has_kwargs=%s, keys=%s",
+                        bool(message.get("content")),
+                        type(message.get("content")),
+                        "kwargs" in message,
+                        list(message.keys())[:10],
+                    )
+
+                    # Check for content in top-level or kwargs (in case of hybrid format)
+                    content = message.get("content")
+                    if not content and "kwargs" in message:
+                        # Content might be in kwargs if dumpd created constructor but type was overwritten
+                        kwargs_content = message.get("kwargs", {}).get("content")
+                        if kwargs_content:
+                            logging.info(
+                                "[EventProcessor] Found content in kwargs, extracting it"
+                            )
+                            content = kwargs_content
+
+                    if content:
+                        self.final_content = (
+                            content if isinstance(content, str) else str(content)
+                        )
+                        logging.info(
+                            "[EventProcessor] ✓✓✓ CAPTURED final AI message: content_length=%d",
+                            len(self.final_content),
+                        )
+                    else:
+                        # Log why it didn't match - this helps debug
+                        logging.error(
+                            "[EventProcessor] ✗✗✗ AI message detected but NO CONTENT FOUND: "
+                            "type=%s, has_top_content=%s, top_content=%s, has_kwargs=%s, "
+                            "kwargs_content=%s, kwargs_keys=%s, all_keys=%s",
+                            msg_type,
+                            bool(message.get("content")),
+                            str(message.get("content"))[:50]
+                            if message.get("content")
+                            else None,
+                            "kwargs" in message,
+                            str(message.get("kwargs", {}).get("content", ""))[:50]
+                            if "kwargs" in message
+                            else None,
+                            list(message.get("kwargs", {}).keys())[:5]
+                            if "kwargs" in message
+                            else [],
+                            list(message.keys())[:10],
+                        )
 
         # Handle end of stream - only if no interrupt was detected
         if self.final_content:

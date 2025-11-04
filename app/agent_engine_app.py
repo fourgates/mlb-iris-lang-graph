@@ -112,13 +112,13 @@ class AgentEngineApp:
             yield dumped_chunk
 
         # After stream completes:
-        # 1. For new queries: Check for interrupts
+        # 1. For new queries: Check for interrupts and extract final answer
         # 2. For resumes: Get final state to extract the answer (stream may not yield messages)
         thread_id = config.get("configurable", {}).get("thread_id")
         if thread_id:
             try:
                 if resume_command is None:
-                    # New query - check for interrupts
+                    # New query - check for interrupts and extract final answer
                     logging.info(
                         "[AgentEngineApp] Checking for interrupts after stream completion (thread_id=%s)",
                         thread_id,
@@ -142,6 +142,102 @@ class AgentEngineApp:
                         logging.info(
                             "[AgentEngineApp] No interrupt detected (graph completed normally)"
                         )
+                        # Extract final AIMessage and yield it so EventProcessor can capture it
+                        messages = final_state.get("messages", [])
+                        if messages:
+                            from langchain_core.messages import AIMessage
+
+                            for msg in reversed(messages):
+                                if isinstance(msg, AIMessage) and msg.content:
+                                    logging.info(
+                                        "[AgentEngineApp] Extracting final answer from state: %s",
+                                        msg.content[:100]
+                                        if len(msg.content) > 100
+                                        else msg.content,
+                                    )
+                                    # Yield in format EventProcessor expects
+                                    # When dumpd serializes AIMessage, it creates a constructor format
+                                    # We need to flatten it to a direct "ai" type message
+                                    dumped_msg = dumpd(msg)
+
+                                    # If dumpd created constructor format, flatten it
+                                    if (
+                                        isinstance(dumped_msg, dict)
+                                        and dumped_msg.get("type") == "constructor"
+                                        and "kwargs" in dumped_msg
+                                    ):
+                                        # Extract content from kwargs and create a flattened message
+                                        kwargs = dumped_msg["kwargs"]
+                                        content = kwargs.get("content")
+
+                                        # Handle list content (multimodal messages)
+                                        if isinstance(content, list):
+                                            # Extract text from parts if it's a parts format
+                                            text_parts = []
+                                            for part in content:
+                                                if (
+                                                    isinstance(part, dict)
+                                                    and part.get("type") == "text"
+                                                ):
+                                                    text_parts.append(
+                                                        part.get("text", "")
+                                                    )
+                                                elif isinstance(part, str):
+                                                    text_parts.append(part)
+                                            content = (
+                                                " ".join(text_parts)
+                                                if text_parts
+                                                else str(content)
+                                            )
+
+                                        flattened_msg = {
+                                            "type": "ai",
+                                            "content": content,
+                                        }
+                                        # Preserve other fields from kwargs if needed
+                                        if "id" in kwargs:
+                                            flattened_msg["id"] = kwargs["id"]
+                                        if "additional_kwargs" in kwargs:
+                                            flattened_msg["additional_kwargs"] = kwargs[
+                                                "additional_kwargs"
+                                            ]
+                                        dumped_msg = flattened_msg
+                                    else:
+                                        # Not a constructor format, just set type
+                                        # Also ensure content is a string if it's a list
+                                        content = dumped_msg.get("content")
+                                        if isinstance(content, list):
+                                            text_parts = []
+                                            for part in content:
+                                                if (
+                                                    isinstance(part, dict)
+                                                    and part.get("type") == "text"
+                                                ):
+                                                    text_parts.append(
+                                                        part.get("text", "")
+                                                    )
+                                                elif isinstance(part, str):
+                                                    text_parts.append(part)
+                                            dumped_msg["content"] = (
+                                                " ".join(text_parts)
+                                                if text_parts
+                                                else str(content)
+                                            )
+                                        dumped_msg["type"] = "ai"
+
+                                    logging.info(
+                                        "[AgentEngineApp] Yielding final message: type=%s, has_content=%s, "
+                                        "content_type=%s, content_length=%s, structure=%s",
+                                        dumped_msg.get("type"),
+                                        bool(dumped_msg.get("content")),
+                                        type(dumped_msg.get("content")),
+                                        len(str(dumped_msg.get("content", "")))
+                                        if dumped_msg.get("content")
+                                        else 0,
+                                        list(dumped_msg.keys())[:5],
+                                    )
+                                    yield dumped_msg
+                                    break
                 else:
                     # Resume - get final state to extract answer
                     logging.info(
@@ -165,8 +261,83 @@ class AgentEngineApp:
                                     if len(msg.content) > 100
                                     else msg.content,
                                 )
-                                # Yield as a message chunk so EventProcessor can handle it
-                                yield dumpd(msg)
+                                # Yield in format EventProcessor expects
+                                # When dumpd serializes AIMessage, it creates a constructor format
+                                # We need to flatten it to a direct "ai" type message
+                                dumped_msg = dumpd(msg)
+
+                                # If dumpd created constructor format, flatten it
+                                if (
+                                    isinstance(dumped_msg, dict)
+                                    and dumped_msg.get("type") == "constructor"
+                                    and "kwargs" in dumped_msg
+                                ):
+                                    # Extract content from kwargs and create a flattened message
+                                    kwargs = dumped_msg["kwargs"]
+                                    content = kwargs.get("content")
+
+                                    # Handle list content (multimodal messages)
+                                    if isinstance(content, list):
+                                        # Extract text from parts if it's a parts format
+                                        text_parts = []
+                                        for part in content:
+                                            if (
+                                                isinstance(part, dict)
+                                                and part.get("type") == "text"
+                                            ):
+                                                text_parts.append(part.get("text", ""))
+                                            elif isinstance(part, str):
+                                                text_parts.append(part)
+                                        content = (
+                                            " ".join(text_parts)
+                                            if text_parts
+                                            else str(content)
+                                        )
+
+                                    flattened_msg = {
+                                        "type": "ai",
+                                        "content": content,
+                                    }
+                                    # Preserve other fields from kwargs if needed
+                                    if "id" in kwargs:
+                                        flattened_msg["id"] = kwargs["id"]
+                                    if "additional_kwargs" in kwargs:
+                                        flattened_msg["additional_kwargs"] = kwargs[
+                                            "additional_kwargs"
+                                        ]
+                                    dumped_msg = flattened_msg
+                                else:
+                                    # Not a constructor format, just set type
+                                    # Also ensure content is a string if it's a list
+                                    content = dumped_msg.get("content")
+                                    if isinstance(content, list):
+                                        text_parts = []
+                                        for part in content:
+                                            if (
+                                                isinstance(part, dict)
+                                                and part.get("type") == "text"
+                                            ):
+                                                text_parts.append(part.get("text", ""))
+                                            elif isinstance(part, str):
+                                                text_parts.append(part)
+                                        dumped_msg["content"] = (
+                                            " ".join(text_parts)
+                                            if text_parts
+                                            else str(content)
+                                        )
+                                    dumped_msg["type"] = "ai"
+
+                                logging.info(
+                                    "[AgentEngineApp] Yielding resume message: type=%s, has_content=%s, "
+                                    "content_type=%s, content_length=%s",
+                                    dumped_msg.get("type"),
+                                    bool(dumped_msg.get("content")),
+                                    type(dumped_msg.get("content")),
+                                    len(str(dumped_msg.get("content", "")))
+                                    if dumped_msg.get("content")
+                                    else 0,
+                                )
+                                yield dumped_msg
                                 break
                     else:
                         logging.warning(
